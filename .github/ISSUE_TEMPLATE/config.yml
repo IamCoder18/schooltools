@@ -1,0 +1,13 @@
+---
+name: Config
+about: Settings for the issue tracker.
+---
+
+blank_issues_enabled: false
+contact_links:
+  - name: Security disclosures
+    url: https://github.com/aarav/schooltools/blob/main/SECURITY.md
+    about: "Please do NOT use GitHub issues for security bugs. Email iamcoder18@gmail.com."
+  - name: D2L / CBE account help
+    url: https://www.cbe.ab.ca/
+    about: "Account and password issues belong with CBE IT, not this repo."

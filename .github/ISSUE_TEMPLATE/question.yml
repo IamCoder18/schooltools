@@ -1,0 +1,24 @@
+---
+name: Question
+about: Ask how to do something with the CLI.
+title: "[question] "
+labels: ["question"]
+assignees: []
+---
+
+## What I want to do
+
+A clear description of the goal.
+
+## What I tried
+
+Commands, flags, and the actual output (redact any credentials).
+
+## What I expected
+
+What "right" looks like for your use case.
+
+## Environment
+
+- `schooltools --version`:
+- OS / shell:

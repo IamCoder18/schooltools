@@ -1,0 +1,19 @@
+---
+name: Documentation
+about: Improve a doc, help text, or example.
+title: "[docs] "
+labels: ["documentation"]
+assignees: []
+---
+
+## What needs improving?
+
+Link the file / section.
+
+## Current text / output
+
+What it says now.
+
+## Proposed replacement
+
+What it should say (with the file you intend to edit).

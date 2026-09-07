@@ -1,0 +1,35 @@
+# Binaries
+/schooltools
+/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary, coverage, and profile output
+*.test
+*.out
+coverage.txt
+coverage.html
+*.coverprofile
+
+# Local environment & secrets
+.env
+.env.local
+.env.*.local
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Go build cache (just in case)
+vendor/
+
+# Kilo runtime state
+/.kilo/
+
+# Local archive data (mirrors ~/.config/schooltools/)
+/.local/
