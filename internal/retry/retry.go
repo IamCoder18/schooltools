@@ -29,16 +29,11 @@ func IsRetryable(err error) bool {
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
-		// DNS errors expose Temporary(); also wrap transient net errors.
-		if netErr.Temporary() {
+		// netErr.Temporary() was deprecated in Go 1.18; rely on Timeout()
+		// plus the string-based fall-through below for transient DNS / fetch errors.
+		if netErr.Timeout() {
 			return true
 		}
-	}
-	// Many transient errors expose a Code string.
-	type coder interface{ ErrorCode() string }
-	var ce coder
-	if errors.As(err, &ce) {
-		// unused — placeholder for future typed wrappers
 	}
 	msg := strings.ToLower(err.Error())
 	if strings.Contains(msg, "fetch failed") ||

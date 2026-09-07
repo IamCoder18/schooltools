@@ -52,7 +52,7 @@ func Heartbeat(jar *cookiejar.Jar) (stderrors.SessionProbeResult, error) {
 		return stderrors.SessionProbeResult{DetectedAt: probeAt, Latency: time.Since(start)},
 			fmt.Errorf("heartbeat: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	body, _ := io.ReadAll(res.Body)
 	finalURL := res.Request.URL.String()
 	result := stderrors.SessionProbeResult{

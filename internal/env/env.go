@@ -21,11 +21,11 @@ func LoadEnv(envFile string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("Env file not found: %s\nCreate it with CBE_EMAIL and CBE_PASSWORD, or pass --env-file <path>.", envFile)
+			return fmt.Errorf("env file not found: %s (create it with CBE_EMAIL and CBE_PASSWORD, or pass --env-file <path>)", envFile)
 		}
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
@@ -49,7 +49,7 @@ func GetCreds() (Creds, error) {
 	email := os.Getenv("CBE_EMAIL")
 	password := os.Getenv("CBE_PASSWORD")
 	if email == "" || password == "" {
-		return Creds{}, fmt.Errorf("CBE_EMAIL and CBE_PASSWORD must be set in the env file.\nThese are read from environment only and never logged.")
+		return Creds{}, fmt.Errorf("CBE_EMAIL and CBE_PASSWORD must be set in the env file; these are read from environment only and never logged")
 	}
 	return Creds{Email: email, Password: password}, nil
 }

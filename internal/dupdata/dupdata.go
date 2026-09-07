@@ -53,7 +53,7 @@ func FetchJSON(rawURL string, jar *cookiejar.Jar, out any) error {
 	if res.StatusCode != http.StatusOK {
 		return apiError(res, rawURL)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if err := json.NewDecoder(res.Body).Decode(out); err != nil {
 		return fmt.Errorf("decode response from %s: %w", res.Request.URL, err)
 	}
@@ -63,7 +63,7 @@ func FetchJSON(rawURL string, jar *cookiejar.Jar, out any) error {
 // apiError builds an error that includes the response body so callers can
 // see the D2L error envelope (e.g. `{ "Errors": [ { "Message": "..." } ] }`).
 func apiError(res *http.Response, rawURL string) error {
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	body, _ := httpclient.BodyBytes(res)
 	msg := strings.TrimSpace(string(body))
 	if len(msg) > 400 {
@@ -92,7 +92,7 @@ func FetchJSONList[T any](rawURL string, jar *cookiejar.Jar) (items []T, err err
 	if res.StatusCode != http.StatusOK {
 		return nil, apiError(res, rawURL)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	body, err := httpclient.BodyBytes(res)
 	if err != nil {
 		return nil, err

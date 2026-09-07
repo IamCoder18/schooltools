@@ -34,36 +34,36 @@ func init() {
 
 func printSessionTTL(ttl authstats.TTLResult) error {
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	defer tw.Flush()
+	defer func() { _ = tw.Flush() }()
 
 	if ttl.Samples == 0 {
-		fmt.Fprintln(tw, "Need at least 2 successful logins in auth.log to compute a gap.")
-		fmt.Fprintln(tw, "Run `schooltools login` at least twice (with the session actually dying in between)")
-		fmt.Fprintln(tw, "to start collecting samples.")
+		_, _ = fmt.Fprintln(tw, "Need at least 2 successful logins in auth.log to compute a gap.")
+		_, _ = fmt.Fprintln(tw, "Run `schooltools login` at least twice (with the session actually dying in between)")
+		_, _ = fmt.Fprintln(tw, "to start collecting samples.")
 		return nil
 	}
 
-	fmt.Fprintf(tw, "Generated:\t%s\n", ttl.GeneratedAt.UTC().Format(time.RFC3339))
-	fmt.Fprintf(tw, "Samples:\t%d (login.success → login.success gaps)\n", ttl.Samples)
-	fmt.Fprintf(tw, "Shortest:\t%s\n", humanGap(ttl.Min))
-	fmt.Fprintf(tw, "Longest:\t%s\n", humanGap(ttl.Max))
-	fmt.Fprintf(tw, "Mean:\t%s\n", humanGap(ttl.Mean))
-	fmt.Fprintf(tw, "Median:\t%s\n", humanGap(ttl.Median))
-	fmt.Fprintf(tw, "Latest gap:\t%s\n", humanGap(ttl.LatestGap))
-	fmt.Fprintf(tw, "Total uptime:\t%s\n", humanGap(ttl.HoursOfUptime))
-	fmt.Fprintln(tw, "")
-	fmt.Fprintln(tw, "Recent login timestamps:")
+	_, _ = fmt.Fprintf(tw, "Generated:\t%s\n", ttl.GeneratedAt.UTC().Format(time.RFC3339))
+	_, _ = fmt.Fprintf(tw, "Samples:\t%d (login.success → login.success gaps)\n", ttl.Samples)
+	_, _ = fmt.Fprintf(tw, "Shortest:\t%s\n", humanGap(ttl.Min))
+	_, _ = fmt.Fprintf(tw, "Longest:\t%s\n", humanGap(ttl.Max))
+	_, _ = fmt.Fprintf(tw, "Mean:\t%s\n", humanGap(ttl.Mean))
+	_, _ = fmt.Fprintf(tw, "Median:\t%s\n", humanGap(ttl.Median))
+	_, _ = fmt.Fprintf(tw, "Latest gap:\t%s\n", humanGap(ttl.LatestGap))
+	_, _ = fmt.Fprintf(tw, "Total uptime:\t%s\n", humanGap(ttl.HoursOfUptime))
+	_, _ = fmt.Fprintln(tw, "")
+	_, _ = fmt.Fprintln(tw, "Recent login timestamps:")
 	for i := len(ttl.LoginTimestamps) - 1; i >= 0 && i >= len(ttl.LoginTimestamps)-5; i-- {
 		if i < 0 {
 			break
 		}
-		fmt.Fprintf(tw, "  %s\n", ttl.LoginTimestamps[i].UTC().Format(time.RFC3339))
+		_, _ = fmt.Fprintf(tw, "  %s\n", ttl.LoginTimestamps[i].UTC().Format(time.RFC3339))
 	}
-	fmt.Fprintln(tw, "")
-	fmt.Fprintln(tw, "Interpretation:")
-	fmt.Fprintln(tw, "  - The shortest gap is the tightest lower bound on session lifetime.")
-	fmt.Fprintln(tw, "  - The longest gap is an upper bound (the session may have died earlier).")
-	fmt.Fprintln(tw, "  - The actual lifetime is somewhere between the shortest and the longest.")
-	fmt.Fprintln(tw, "  - Pick a heartbeat interval comfortably below the median to avoid forced re-logins.")
+	_, _ = fmt.Fprintln(tw, "")
+	_, _ = fmt.Fprintln(tw, "Interpretation:")
+	_, _ = fmt.Fprintln(tw, "  - The shortest gap is the tightest lower bound on session lifetime.")
+	_, _ = fmt.Fprintln(tw, "  - The longest gap is an upper bound (the session may have died earlier).")
+	_, _ = fmt.Fprintln(tw, "  - The actual lifetime is somewhere between the shortest and the longest.")
+	_, _ = fmt.Fprintln(tw, "  - Pick a heartbeat interval comfortably below the median to avoid forced re-logins.")
 	return nil
 }

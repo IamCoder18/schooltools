@@ -24,7 +24,7 @@ var urlCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 		if !httpclient.IsRedirect(res.StatusCode) {
 			return fmt.Errorf("expected a redirect, got %d %s", res.StatusCode, res.Status)
 		}

@@ -70,7 +70,7 @@ func (p *Progress) Start() {
 		}
 		m := newProgressModel(p.title, p.total)
 		p.prog = tea.NewProgram(m, tea.WithOutput(os.Stderr))
-		go p.prog.Run()
+		go func() { _, _ = p.prog.Run() }()
 	})
 }
 
@@ -158,16 +158,13 @@ func (p *Progress) send(msg tea.Msg) {
 	prog.Send(msg)
 }
 
-// flush is a no-op kept for future use.
-func (p *Progress) flush() {}
-
 func (p *Progress) writeSummary(w io.Writer) {
 	p.mu.Lock()
 	stats := p.stats
 	total := p.total
 	done := p.done
 	p.mu.Unlock()
-	fmt.Fprintf(w, "%s done — %d/%d course%s, %d topics checked, %d fetched, %d unchanged\n",
+	_, _ = fmt.Fprintf(w, "%s done — %d/%d course%s, %d topics checked, %d fetched, %d unchanged\n",
 		p.title, done, total, plural(done),
 		stats.Checked, stats.Fetched, stats.Stale)
 }

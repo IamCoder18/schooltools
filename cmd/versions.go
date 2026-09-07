@@ -29,18 +29,18 @@ var versionsCmd = &cobra.Command{
 			fmt.Println(string(b))
 			return nil
 		}
-		fmt.Fprintf(os.Stdout, "D2L Valence API versions in use:\n")
-		fmt.Fprintf(os.Stdout, "  lp  %s  /d2l/api/lp/<v>/...\n", v.LP)
-		fmt.Fprintf(os.Stdout, "  le  %s  /d2l/api/le/<v>/...\n", v.LE)
-		fmt.Fprintf(os.Stdout, "  bas %s  /d2l/api/bas/<v>/...\n", v.BAS)
-		fmt.Fprintf(os.Stdout, "  ep  %s  /d2l/api/eP/<v>/...\n", v.EP)
-		fmt.Fprintf(os.Stdout, "\nSource: %s\n", v.Source)
+		_, _ = fmt.Fprintf(os.Stdout, "D2L Valence API versions in use:\n")
+		_, _ = fmt.Fprintf(os.Stdout, "  lp  %s  /d2l/api/lp/<v>/...\n", v.LP)
+		_, _ = fmt.Fprintf(os.Stdout, "  le  %s  /d2l/api/le/<v>/...\n", v.LE)
+		_, _ = fmt.Fprintf(os.Stdout, "  bas %s  /d2l/api/bas/<v>/...\n", v.BAS)
+		_, _ = fmt.Fprintf(os.Stdout, "  ep  %s  /d2l/api/eP/<v>/...\n", v.EP)
+		_, _ = fmt.Fprintf(os.Stdout, "\nSource: %s\n", v.Source)
 		if !v.DiscoveredAt.IsZero() {
-			fmt.Fprintf(os.Stdout, "Discovered at: %s\n", v.DiscoveredAt.UTC().Format("2006-01-02T15:04:05Z"))
+			_, _ = fmt.Fprintf(os.Stdout, "Discovered at: %s\n", v.DiscoveredAt.UTC().Format("2006-01-02T15:04:05Z"))
 		} else {
-			fmt.Fprintf(os.Stdout, "Discovered at: (never; using constants — run any authenticated command to discover)\n")
+			_, _ = fmt.Fprintf(os.Stdout, "Discovered at: (never; using constants — run any authenticated command to discover)\n")
 		}
-		fmt.Fprintf(os.Stdout, "\nDefaults (ua.go): lp=1.47 le=1.47 bas=1.6 ep=2.5\n")
+		_, _ = fmt.Fprintf(os.Stdout, "\nDefaults (ua.go): lp=1.47 le=1.47 bas=1.6 ep=2.5\n")
 		return nil
 	},
 }

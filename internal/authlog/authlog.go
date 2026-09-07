@@ -77,7 +77,7 @@ func logInternal(event string, fields map[string]any) error {
 		warn(err)
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := f.Write(line); err != nil {
 		warn(err)
 		return err

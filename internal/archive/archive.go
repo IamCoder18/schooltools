@@ -1017,7 +1017,7 @@ func downloadFileBody(jar *cookiejar.Jar, rawURL string) ([]byte, string, error)
 	if err != nil {
 		return nil, "", err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode/100 != 2 {
 		body, _ := io.ReadAll(res.Body)
 		msg := strings.TrimSpace(string(body))
@@ -1204,10 +1204,6 @@ type d2lCourse struct {
 
 type d2lCoursesResponse struct {
 	Courses []d2lCourse `json:"Courses"`
-}
-
-func listAllCourses(jar *cookiejar.Jar) ([]Course, error) {
-	return listAllCoursesAt(jar, ua.D2LBase)
 }
 
 func listAllCoursesAt(jar *cookiejar.Jar, base string) ([]Course, error) {

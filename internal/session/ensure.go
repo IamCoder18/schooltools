@@ -145,7 +145,7 @@ func EnsureSession(opts EnsureOptions) (EnsureResult, error) {
 					"[schooltools] no saved session; run `schooltools login` first.")
 			}
 			return EnsureResult{InvalidReason: reason},
-				fmt.Errorf("no saved session. Run 'schooltools login' first.")
+				fmt.Errorf("no saved session; run 'schooltools login' first")
 		}
 		names := make([]string, len(records))
 		for i, r := range records {

@@ -64,10 +64,10 @@ func printTokenRecord(tok session.TokenRecord, now time.Time) {
 		fmt.Printf("  issued:      %s\n", tok.IssuedAt.UTC().Format(time.RFC3339))
 	}
 	if tok.IsExpired(now) {
-		fmt.Fprintf(os.Stdout, "  EXPIRED at %s (re-login to refresh)\n",
+		_, _ = fmt.Fprintf(os.Stdout, "  EXPIRED at %s (re-login to refresh)\n",
 			tok.ExpiresAt.UTC().Format(time.RFC3339))
 	} else if !tok.ExpiresAt.IsZero() {
-		fmt.Fprintf(os.Stdout, "  expires:     %s   (in %s)\n",
+		_, _ = fmt.Fprintf(os.Stdout, "  expires:     %s   (in %s)\n",
 			tok.ExpiresAt.UTC().Format(time.RFC3339), humanize(tok.Remaining(now)))
 	}
 }

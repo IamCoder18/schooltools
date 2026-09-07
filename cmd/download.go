@@ -104,7 +104,7 @@ func runDownloadForCourse(courseID string, topicID int) error {
 	if err != nil {
 		if isLoginError(err) {
 			_ = session.Clear()
-			return fmt.Errorf("session expired. Run 'schooltools login' again.")
+			return fmt.Errorf("session expired; run 'schooltools login' again")
 		}
 		return fmt.Errorf("fetch topic metadata: %w", err)
 	}
