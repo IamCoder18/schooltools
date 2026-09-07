@@ -4,15 +4,50 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  release:
-    name: release
+  build:
+    name: build (${{ matrix.target }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            goos: linux
+            goarch: amd64
+            ext: ""
+          - target: linux-arm64
+            goos: linux
+            goarch: arm64
+            ext: ""
+          - target: linux-arm
+            goos: linux
+            goarch: arm
+            ext: ""
+          - target: darwin-amd64
+            goos: darwin
+            goarch: amd64
+            ext: ""
+          - target: darwin-arm64
+            goos: darwin
+            goarch: arm64
+            ext: ""
+          - target: windows-amd64
+            goos: windows
+            goarch: amd64
+            ext: ".exe"
+          - target: windows-arm64
+            goos: windows
+            goarch: arm64
+            ext: ".exe"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -21,30 +56,52 @@ jobs:
         with:
           go-version: "1.26"
           cache: true
-      - name: Build binaries
+      - name: Verify
+        run: |
+          go mod download
+          go mod verify
+          go vet ./...
+      - name: Build
         env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
           VERSION: ${{ github.ref_name }}
         run: |
-          mkdir -p dist
-          for target in \
-            "linux/amd64" \
-            "linux/arm64" \
-            "darwin/amd64" \
-            "darwin/arm64" \
-            "windows/amd64"; do
-            GOOS="${target%/*}"
-            GOARCH="${target#*/}"
-            ext=""
-            [ "$GOOS" = "windows" ] && ext=".exe"
-            echo "Building $GOOS/$GOARCH..."
-            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
-              go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
-              -o "dist/schooltools-${VERSION}-${GOOS}-${GOARCH}${ext}" .
-          done
-          shasum -a 256 dist/* > dist/SHA256SUMS
-      - name: Create GitHub release
+          out="dist/schooltools-${VERSION}-${{ matrix.target }}${{ matrix.ext }}"
+          CGO_ENABLED=0 go build -trimpath \
+            -ldflags "-s -w" \
+            -o "${out}" .
+          (cd dist && sha256sum "$(basename "${out}")" > "$(basename "${out}").sha256")
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: schooltools-${{ matrix.target }}
+          path: |
+            dist/schooltools-${{ github.ref_name }}-${{ matrix.target }}${{ matrix.ext }}
+            dist/schooltools-${{ github.ref_name }}-${{ matrix.target }}${{ matrix.ext }}.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate combined SHA256SUMS
+        working-directory: dist
+        run: |
+          { echo "# schooltools ${{ github.ref_name }}"; sha256sum -b schooltools-*; } > SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             dist/*
