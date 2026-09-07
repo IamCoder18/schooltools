@@ -1,0 +1,15 @@
+[Unit]
+Description=Run schooltools archive every 30 minutes
+Documentation=man:schooltools(1)
+
+[Timer]
+# First run 5 minutes after the timer is enabled (gives the user time to log
+# in interactively if needed). Subsequent runs every 30 minutes, with up to
+# 60s of slack to avoid stampedes when the host wakes up at the same minute.
+OnBootSec=5min
+OnUnitActiveSec=30min
+AccuracySec=60s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

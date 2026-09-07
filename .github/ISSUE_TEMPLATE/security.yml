@@ -1,0 +1,29 @@
+---
+name: Security report
+about: Confidential channel for security issues.
+title: "[security] "
+labels: ["security"]
+assignees: []
+---
+
+> **Do not** use this template for real security issues. Open
+> security issues publicly and they cannot be retracted.
+>
+> For vulnerabilities, email **[iamcoder18@gmail.com](mailto:iamcoder18@gmail.com)**
+> directly. See [SECURITY.md](../../SECURITY.md) for the full
+> disclosure process.
+
+This template is for tracking **already-disclosed** security work, or
+for low-severity observations that are not exploitable.
+
+## What I noticed
+
+A factual description.
+
+## Suggested fix
+
+If you have one.
+
+## References
+
+CVE, advisory URL, or upstream issue.

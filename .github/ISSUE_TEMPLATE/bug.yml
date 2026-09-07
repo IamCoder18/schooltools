@@ -1,0 +1,49 @@
+---
+name: Bug report
+about: Something the CLI does is wrong or broken.
+title: "[bug] "
+labels: ["bug"]
+assignees: []
+---
+
+## Summary
+
+A one-line summary of the bug.
+
+## Reproduction
+
+<!-- The exact commands you ran. Replace the placeholders. -->
+
+```sh
+schooltools version:  # output of `schooltools --version`
+
+schooltools <command> <args>...
+```
+
+## Observed behaviour
+
+What you actually saw.
+
+## Expected behaviour
+
+What you expected to see.
+
+## Environment
+
+- OS / distribution (e.g. "Ubuntu 24.04", "macOS 15", "Arch"):
+- Go version (`go version`) if relevant:
+- CBE / D2L tenant (most users are CBE; mention if different):
+
+## Logs
+
+<!-- Paste a redacted ~/.config/schooltools/auth.log line if this is
+     auth- or session-related. NEVER paste CBE_PASSWORD, bearer tokens,
+     or cookie values. -->
+
+```jsonl
+<line>
+```
+
+## Anything else
+
+Screenshots, workarounds you've tried, related issues.

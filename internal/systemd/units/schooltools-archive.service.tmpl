@@ -1,0 +1,18 @@
+[Unit]
+Description=schooltools archive (keeps D2L LMS session warm)
+Documentation=man:schooltools(1)
+
+[Service]
+Type=oneshot
+# Run archive in non-interactive mode. Every successful run extends the
+# server-side LMS session via the API calls the archive makes. If the saved
+# session has expired, the run exits non-zero with SESSION_EXPIRED — the user
+# is expected to run `schooltools login` interactively. We intentionally do
+# NOT pass --auto-refresh here: silent reauth would consume ADFS credentials
+# without the user knowing.
+ExecStart={{.ExecStart}}
+StandardOutput=journal
+StandardError=journal
+# Don't keep failed state around — the next successful run is the success
+# signal; journald is the source of truth for the failure trail.
+SuccessExitStatus=0

@@ -1,0 +1,39 @@
+---
+name: Feature request
+about: Suggest something the CLI should do.
+title: "[feat] "
+labels: ["enhancement"]
+assignees: []
+---
+
+## Summary
+
+One sentence describing the proposed feature.
+
+## User story
+
+As a *<role>*,
+I want *<capability>*,
+so that *<outcome>*.
+
+## What I tried
+
+The commands or workflows I tried to do this today.
+
+## Proposed solution
+
+How you imagine this working. If you have a CLI sketch, please add
+it here:
+
+```sh
+schooltools <your idea here>
+```
+
+## Alternatives considered
+
+Other approaches you considered and rejected.
+
+## Out of scope
+
+Anything you explicitly do **not** want (so we don't accidentally
+ship it).
