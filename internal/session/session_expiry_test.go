@@ -51,7 +51,10 @@ func TestSessionExpiryWithSAML(t *testing.T) {
 		ex, err := session.SessionExpiry()
 		require.NoError(t, err)
 		assert.True(t, ex.SAMLAvailable)
-		assert.Equal(t, noa.Truncate(time.Second), ex.SAMLNotAfter.Truncate(time.Second))
+		assert.True(t,
+			noa.Truncate(time.Second).Equal(ex.SAMLNotAfter.Truncate(time.Second)),
+			"SAMLNotAfter mismatch: want %s, got %s", noa.Truncate(time.Second), ex.SAMLNotAfter.Truncate(time.Second),
+		)
 	})
 }
 
