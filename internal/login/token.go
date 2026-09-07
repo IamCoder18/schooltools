@@ -78,7 +78,7 @@ func mintBrightspaceToken(jar *cookiejar.Jar) (*session.TokenRecord, error) {
 	if err != nil {
 		return nil, fmt.Errorf("oauth2/token: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
@@ -127,7 +127,7 @@ func fetchXSRFToken(jar *cookiejar.Jar) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
 		return "", err

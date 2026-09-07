@@ -138,7 +138,7 @@ func Render(opts Options) string {
 		t.Row(row...)
 	}
 
-	if opts.Widths == nil || len(opts.Widths) == 0 {
+	if len(opts.Widths) == 0 {
 		opts.Widths = make([]int, len(opts.Headers))
 		for i := range opts.Widths {
 			opts.Widths[i] = 20

@@ -37,20 +37,20 @@ func init() {
 
 func printAuthSummary(s authstats.Summary, ttl authstats.TTLResult) error {
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	defer tw.Flush()
+	defer func() { _ = tw.Flush() }()
 
-	fmt.Fprintf(tw, "Auth log:\t%s\n", authlog.Path())
-	fmt.Fprintf(tw, "Generated:\t%s\n", s.GeneratedAt.UTC().Format(time.RFC3339))
-	fmt.Fprintf(tw, "Total events:\t%d\n", s.TotalEvents)
+	_, _ = fmt.Fprintf(tw, "Auth log:\t%s\n", authlog.Path())
+	_, _ = fmt.Fprintf(tw, "Generated:\t%s\n", s.GeneratedAt.UTC().Format(time.RFC3339))
+	_, _ = fmt.Fprintf(tw, "Total events:\t%d\n", s.TotalEvents)
 	if !s.FirstEvent.IsZero() {
-		fmt.Fprintf(tw, "Span:\t%s → %s (%s)\n",
+		_, _ = fmt.Fprintf(tw, "Span:\t%s → %s (%s)\n",
 			s.FirstEvent.UTC().Format(time.RFC3339),
 			s.LastEvent.UTC().Format(time.RFC3339),
 			s.LastEvent.Sub(s.FirstEvent).Truncate(time.Second))
 	}
 
-	fmt.Fprintln(tw, "")
-	fmt.Fprintln(tw, "Event counts:")
+	_, _ = fmt.Fprintln(tw, "")
+	_, _ = fmt.Fprintln(tw, "Event counts:")
 	// Sort counts descending for stable output.
 	type kv struct {
 		name string
@@ -68,35 +68,35 @@ func printAuthSummary(s authstats.Summary, ttl authstats.TTLResult) error {
 		}
 	}
 	for _, p := range pairs {
-		fmt.Fprintf(tw, "  %-32s\t%d\n", p.name, p.n)
+		_, _ = fmt.Fprintf(tw, "  %-32s\t%d\n", p.name, p.n)
 	}
 
-	fmt.Fprintln(tw, "")
-	fmt.Fprintln(tw, "Observed session lifetime (gap between successive login.success):")
+	_, _ = fmt.Fprintln(tw, "")
+	_, _ = fmt.Fprintln(tw, "Observed session lifetime (gap between successive login.success):")
 	if ttl.Samples == 0 {
-		fmt.Fprintln(tw, "  (need at least 2 successful logins to compute a gap)")
+		_, _ = fmt.Fprintln(tw, "  (need at least 2 successful logins to compute a gap)")
 	} else {
-		fmt.Fprintf(tw, "  samples:\t%d\n", ttl.Samples)
-		fmt.Fprintf(tw, "  shortest:\t%s (lower bound on session life)\n", humanGap(ttl.Min))
-		fmt.Fprintf(tw, "  longest:\t%s\n", humanGap(ttl.Max))
-		fmt.Fprintf(tw, "  mean:\t%s\n", humanGap(ttl.Mean))
-		fmt.Fprintf(tw, "  median:\t%s\n", humanGap(ttl.Median))
-		fmt.Fprintf(tw, "  latest gap:\t%s (before the most recent login)\n", humanGap(ttl.LatestGap))
-		fmt.Fprintf(tw, "  total logged-in time:\t%s\n", humanGap(ttl.HoursOfUptime))
+		_, _ = fmt.Fprintf(tw, "  samples:\t%d\n", ttl.Samples)
+		_, _ = fmt.Fprintf(tw, "  shortest:\t%s (lower bound on session life)\n", humanGap(ttl.Min))
+		_, _ = fmt.Fprintf(tw, "  longest:\t%s\n", humanGap(ttl.Max))
+		_, _ = fmt.Fprintf(tw, "  mean:\t%s\n", humanGap(ttl.Mean))
+		_, _ = fmt.Fprintf(tw, "  median:\t%s\n", humanGap(ttl.Median))
+		_, _ = fmt.Fprintf(tw, "  latest gap:\t%s (before the most recent login)\n", humanGap(ttl.LatestGap))
+		_, _ = fmt.Fprintf(tw, "  total logged-in time:\t%s\n", humanGap(ttl.HoursOfUptime))
 	}
 
 	if len(s.LastFailures) > 0 {
-		fmt.Fprintln(tw, "")
-		fmt.Fprintln(tw, "Recent failures (last 5):")
+		_, _ = fmt.Fprintln(tw, "")
+		_, _ = fmt.Fprintln(tw, "Recent failures (last 5):")
 		for _, f := range s.LastFailures {
 			ts := f.Time.UTC().Format(time.RFC3339)
 			switch f.Name {
 			case "login.failure":
-				fmt.Fprintf(tw, "  %s  login.failure  code=%s  msg=%s\n", ts, f.Code, truncate(f.Message, 80))
+				_, _ = fmt.Fprintf(tw, "  %s  login.failure  code=%s  msg=%s\n", ts, f.Code, truncate(f.Message, 80))
 			case "session.invalid":
-				fmt.Fprintf(tw, "  %s  session.invalid  reason=%s\n", ts, f.Reason)
+				_, _ = fmt.Fprintf(tw, "  %s  session.invalid  reason=%s\n", ts, f.Reason)
 			case "session.heartbeat.failed":
-				fmt.Fprintf(tw, "  %s  session.heartbeat.failed  msg=%s\n", ts, truncate(f.Message, 80))
+				_, _ = fmt.Fprintf(tw, "  %s  session.heartbeat.failed  msg=%s\n", ts, truncate(f.Message, 80))
 			}
 		}
 	}

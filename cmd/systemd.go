@@ -108,49 +108,49 @@ func printSystemdStatus(action string, st systemd.Status) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(os.Stdout, string(out))
+		_, _ = fmt.Fprintln(os.Stdout, string(out))
 		return nil
 	}
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	defer tw.Flush()
+	defer func() { _ = tw.Flush() }()
 
 	switch action {
 	case "installed":
-		fmt.Fprintf(tw, "Installed:\t%s\n", st.UnitPath)
-		fmt.Fprintf(tw, "Enabled:\t%v\n", st.Enabled)
-		fmt.Fprintf(tw, "Active:\t%v\n", st.Active)
+		_, _ = fmt.Fprintf(tw, "Installed:\t%s\n", st.UnitPath)
+		_, _ = fmt.Fprintf(tw, "Enabled:\t%v\n", st.Enabled)
+		_, _ = fmt.Fprintf(tw, "Active:\t%v\n", st.Active)
 		if st.Next != "" {
-			fmt.Fprintf(tw, "Next run:\t%s (in %s)\n", st.Next, st.Left)
+			_, _ = fmt.Fprintf(tw, "Next run:\t%s (in %s)\n", st.Next, st.Left)
 		}
 		if st.Last != "" {
-			fmt.Fprintf(tw, "Last run:\t%s (%s)\n", st.Last, st.Passed)
+			_, _ = fmt.Fprintf(tw, "Last run:\t%s (%s)\n", st.Last, st.Passed)
 		}
-		fmt.Fprintln(tw, "")
-		fmt.Fprintln(tw, "Run `schooltools systemd status` any time to inspect the timer.")
-		fmt.Fprintln(tw, "Inspect logs with: journalctl --user -u schooltools-archive.service")
+		_, _ = fmt.Fprintln(tw, "")
+		_, _ = fmt.Fprintln(tw, "Run `schooltools systemd status` any time to inspect the timer.")
+		_, _ = fmt.Fprintln(tw, "Inspect logs with: journalctl --user -u schooltools-archive.service")
 	case "uninstalled":
-		fmt.Fprintln(tw, "Uninstalled. Unit files removed from "+st.UserDir+".")
-		fmt.Fprintln(tw, "If a run is currently in-flight it will finish; subsequent timer ticks are disabled.")
+		_, _ = fmt.Fprintln(tw, "Uninstalled. Unit files removed from "+st.UserDir+".")
+		_, _ = fmt.Fprintln(tw, "If a run is currently in-flight it will finish; subsequent timer ticks are disabled.")
 	case "status":
 		if !st.Installed {
-			fmt.Fprintln(tw, "Not installed. Run `schooltools systemd install` to set up the timer.")
+			_, _ = fmt.Fprintln(tw, "Not installed. Run `schooltools systemd install` to set up the timer.")
 			return nil
 		}
-		fmt.Fprintf(tw, "Unit path:\t%s\n", st.UnitPath)
-		fmt.Fprintf(tw, "Enabled:\t%v\n", st.Enabled)
-		fmt.Fprintf(tw, "Active:\t%v\n", st.Active)
+		_, _ = fmt.Fprintf(tw, "Unit path:\t%s\n", st.UnitPath)
+		_, _ = fmt.Fprintf(tw, "Enabled:\t%v\n", st.Enabled)
+		_, _ = fmt.Fprintf(tw, "Active:\t%v\n", st.Active)
 		if st.Next != "" {
-			fmt.Fprintf(tw, "Next run:\t%s (in %s)\n", st.Next, st.Left)
+			_, _ = fmt.Fprintf(tw, "Next run:\t%s (in %s)\n", st.Next, st.Left)
 		}
 		if st.Last != "" {
-			fmt.Fprintf(tw, "Last run:\t%s (%s)\n", st.Last, st.Passed)
+			_, _ = fmt.Fprintf(tw, "Last run:\t%s (%s)\n", st.Last, st.Passed)
 		}
 		if len(st.TimerOutput) > 0 {
-			fmt.Fprintln(tw, "")
-			fmt.Fprintln(tw, "Raw `systemctl --user list-timers` output:")
+			_, _ = fmt.Fprintln(tw, "")
+			_, _ = fmt.Fprintln(tw, "Raw `systemctl --user list-timers` output:")
 			for _, line := range st.TimerOutput {
-				fmt.Fprintln(tw, "  "+line)
+				_, _ = fmt.Fprintln(tw, "  "+line)
 			}
 		}
 	}

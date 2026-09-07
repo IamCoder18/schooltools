@@ -370,15 +370,7 @@ func runArchiveDiff(args []string) error {
 		return nil
 	}
 
-	tw := table.Render
-	_ = tw
-	out := table.Render(table.Options{
-		Headers: []string{"ID", "Code", "Name", "Total", "New", "Modified", "Unchanged", "WouldFetch"},
-		Widths: table.Widths([]table.ColumnSpec{
-			table.Fixed(8), table.Fixed(10), table.Flex(24),
-			table.Fixed(6), table.Fixed(5), table.Fixed(9), table.Fixed(10), table.Flex(8),
-		}, table.TerminalWidth()),
-	})
+	var out string
 	rows := make([][]string, 0, len(result.PerCourse))
 	for _, c := range result.PerCourse {
 		var fetchIDs string

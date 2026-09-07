@@ -107,7 +107,7 @@ func loadFileRaw() ([]cookies.Record, error) {
 	}
 	var arr []json.RawMessage
 	if err := json.Unmarshal(raw, &arr); err != nil {
-		return nil, fmt.Errorf("session file %s is corrupt (%v). Delete it and run 'schooltools login' again.", SessionPath(), err)
+		return nil, fmt.Errorf("session file %s is corrupt (%v); delete it and run 'schooltools login' again", SessionPath(), err)
 	}
 	records := make([]cookies.Record, 0, len(arr))
 	for _, m := range arr {

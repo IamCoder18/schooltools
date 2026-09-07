@@ -58,11 +58,11 @@ func BrowserTransport() http.RoundTripper {
 		cfg := &tls.Config{ServerName: host}
 		tlsConn := tls.UClient(rawConn, cfg, tls.HelloCustom)
 		if err := tlsConn.ApplyPreset(helloSpec); err != nil {
-			rawConn.Close()
+			_ = rawConn.Close()
 			return nil, err
 		}
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
-			rawConn.Close()
+			_ = rawConn.Close()
 			return nil, err
 		}
 		return tlsConn, nil

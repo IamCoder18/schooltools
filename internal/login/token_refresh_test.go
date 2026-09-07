@@ -98,7 +98,7 @@ func peekD2LHome(t *testing.T, jar *cookiejar.Jar) string {
 		t.Logf("peek: %v", err)
 		return ""
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	t.Logf("/d2l/home peek: status=%d final=%s", res.StatusCode, res.Request.URL.String())
 	if res.StatusCode != http.StatusOK {
 		return ""

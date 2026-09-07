@@ -132,7 +132,7 @@ var courseGetCmd = &cobra.Command{
 			// 403 for student role on CBE (per D2L research §3.2) — print a
 			// clear "not authorised" message rather than a raw error.
 			if strings.Contains(err.Error(), " 403 ") {
-				return fmt.Errorf("not authorised: students cannot read /courses/<id> on CBE. Use `course list` for the courses you're enrolled in.")
+				return fmt.Errorf("not authorised: students cannot read /courses/<id> on CBE; use `course list` for the courses you're enrolled in")
 			}
 			return err
 		}
@@ -182,7 +182,7 @@ func fetchCourses(jar *cookiejar.Jar, rawURL string) (d2lCoursesResponse, error)
 	if res.StatusCode != 200 {
 		if ua.IsLoginURL(res.Request.URL.String()) {
 			_ = session.Clear()
-			return d2lCoursesResponse{}, fmt.Errorf("session expired (landed on %s). Run 'schooltools login' again.", res.Request.URL.String())
+			return d2lCoursesResponse{}, fmt.Errorf("session expired (landed on %s); run 'schooltools login' again", res.Request.URL.String())
 		}
 		return d2lCoursesResponse{}, fmt.Errorf("D2L my-courses API returned %d %s", res.StatusCode, res.Status)
 	}

@@ -208,7 +208,7 @@ fmt.Printf("%d announcement%s\n", len(items), plural(len(items)))
 		if n.IsPinned {
 			flags += "[pinned] "
 		}
-		if n.IsPublished == false {
+		if !n.IsPublished {
 			flags += "[draft] "
 		}
 		fmt.Printf("  %s\t%s\t%s%s\n", n.Id.String(), when, flags, truncate(n.Title, 80))

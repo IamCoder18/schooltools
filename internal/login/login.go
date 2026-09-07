@@ -108,7 +108,7 @@ func Run(opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	r2.Body.Close()
+	_ = r2.Body.Close()
 	if opts.Verbose {
 		_ = os.WriteFile("/tmp/kilo/schooltools-debug-adfs-login.html", loginHTML, 0o600)
 	}
@@ -202,11 +202,11 @@ verbose(opts, fmt.Sprintf("[hop %d] %s #%d: %d %s", hopsTotal, stage, hopsInStag
 			verbose(opts, "           -> "+nextURL)
 			newStage := stageFor(nextURL, stage)
 			if newStage != stage {
-				stage = newStage
-				hopsInStage = 0
-			}
-			res.Body.Close()
-			res, err = fetchGet(nextURL, jar, res.Request.URL.String(), opts)
+stage = newStage
+			hopsInStage = 0
+		}
+		_ = res.Body.Close()
+		res, err = fetchGet(nextURL, jar, res.Request.URL.String(), opts)
 			if err != nil {
 				return Result{}, err
 			}
@@ -223,7 +223,7 @@ verbose(opts, fmt.Sprintf("[hop %d] %s #%d: %d %s", hopsTotal, stage, hopsInStag
 		if err != nil {
 			return Result{}, err
 		}
-		res.Body.Close()
+		_ = res.Body.Close()
 		doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(html)))
 		if err != nil {
 			return Result{}, err
@@ -319,7 +319,7 @@ func readCreds() (struct{ email, password string }, error) {
 	email := os.Getenv("CBE_EMAIL")
 	password := os.Getenv("CBE_PASSWORD")
 	if email == "" || password == "" {
-		return struct{ email, password string }{}, fmt.Errorf("CBE_EMAIL and CBE_PASSWORD must be set in the env file.")
+		return struct{ email, password string }{}, fmt.Errorf("CBE_EMAIL and CBE_PASSWORD must be set in the env file")
 	}
 	return struct{ email, password string }{email: email, password: password}, nil
 }

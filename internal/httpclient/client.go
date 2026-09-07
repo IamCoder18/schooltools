@@ -167,7 +167,7 @@ func FollowRedirects(rawURL string, jar *cookiejar.Jar, opts FetchOptions) (*htt
 	if err != nil {
 		return nil, err
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 	return Fetch(next.String(), jar, opts)
 }
 
@@ -194,7 +194,7 @@ func BodyBytes(res *http.Response) ([]byte, error) {
 	if res == nil {
 		return nil, fmt.Errorf("nil response")
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	var buf bytes.Buffer
 	_, err := io.Copy(&buf, res.Body)
 	return buf.Bytes(), err

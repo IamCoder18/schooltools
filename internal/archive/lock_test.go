@@ -33,7 +33,7 @@ func TestLockBlocksOtherLocks(t *testing.T) {
 	dir := t.TempDir()
 	first, err := TryLock(dir)
 	require.NoError(t, err)
-	defer first.Release()
+	defer func() { _ = first.Release() }()
 
 	second, err := TryLock(dir)
 	assert.ErrorIs(t, err, ErrAlreadyRunning)
