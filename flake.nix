@@ -23,7 +23,7 @@
         {
           default = pkgs.buildGoModule {
             pname = "schooltools";
-            version = "0.2.0";
+            version = self.shortRev or self.dirtyShortRev or "unknown";
 
             src = self;
             vendorHash = "sha256-m2qPzdz6eF+xm8oXsK0dbc+z6sQ1wOOMc1rbBQLd/3s=";

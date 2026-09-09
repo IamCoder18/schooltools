@@ -75,8 +75,12 @@ jobs:
           args: --timeout=5m
 
   nix:
-    name: nix flake
-    runs-on: ubuntu-latest
+    name: nix flake (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v22
