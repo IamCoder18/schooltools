@@ -8,6 +8,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 - Initial public release on GitHub.
+- Nix flake packaging for running or installing `schooltools` on NixOS and
+  other systems with flakes enabled.
+- Automated update pull requests for pinned Nix inputs and the Go module hash.
 
 ## [0.2.0] - 2026-09-05
 

@@ -29,6 +29,40 @@ sure which command you need, start with the six above.
 go install .
 ```
 
+On NixOS or any system with flakes enabled, run the CLI directly:
+
+```sh
+nix run github:IamCoder18/schooltools -- --help
+```
+
+To install it into your user profile:
+
+```sh
+nix profile install github:IamCoder18/schooltools
+```
+
+For a declarative NixOS configuration, add the repository as an input and
+install its default package:
+
+```nix
+{
+  inputs.schooltools.url = "github:IamCoder18/schooltools";
+
+  outputs = { nixpkgs, schooltools, ... }: {
+    nixosConfigurations.my-host = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        ({ pkgs, ... }: {
+          environment.systemPackages = [
+            schooltools.packages.${pkgs.system}.default
+          ];
+        })
+      ];
+    };
+  };
+}
+```
+
 1. Create a `.env` in your working directory:
 
    ```

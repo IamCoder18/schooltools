@@ -1,0 +1,32 @@
+name: Update Nix dependencies
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    name: update flake inputs and hashes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - name: Update flake inputs
+        run: nix flake update
+      - name: Update Go module hash
+        run: nix run nixpkgs#nix-update -- --flake --version=skip default
+      - name: Check flake
+        run: nix flake check
+      - name: Open update pull request
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: automation/update-nix-dependencies
+          commit-message: "build(nix): update dependencies"
+          title: "build(nix): update dependencies"
+          body: Automated update of the pinned Nixpkgs input and Go module hash.
+          labels: dependencies
