@@ -6,441 +6,247 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/aarav/schooltools/internal/archive"
-	"github.com/aarav/schooltools/internal/authlog"
 	"github.com/aarav/schooltools/internal/session"
 	"github.com/aarav/schooltools/internal/table"
 	"github.com/aarav/schooltools/internal/ui"
 )
 
 var (
-	archiveDir         string
-	archiveEnvFile     string
-	archiveAutoRefresh bool
-	archiveJSON        bool
-	archiveListJSON    bool
-	archiveVerbose     bool
-	archiveNoSpinner   bool
-	archiveDiff        bool
-	archiveListDir     string
-	archiveFiles       bool // download File-topic bodies alongside metadata; default true
+	archiveDir       string
+	archiveJSON      bool
+	archivePlain     bool
+	archiveQuiet     bool
+	archiveVerbose   bool
+	archiveNoSpinner bool
+	archiveCourses   []string
+	archiveEnvFile   = ".env"
+
+	archiveUpdateDryRun    bool
+	archiveUpdateNoBodies  bool
+	archiveUpdateNoRefresh bool
+	archiveUpdateWait      bool
+
+	archiveFindExt  string
+	archiveFindType string
+	archiveFindWith bool
+	archiveFindMiss bool
+
+	archiveShowKind string
+
+	archiveCatMeta bool
+
+	archivePathKind string
+
+	archiveExportOut    string
+	archiveExportFlat   bool
+	archiveExportDryRun bool
+	archiveExportExt    string
+
+	archivePruneDelete bool
+	archivePruneWait   bool
+
+	archiveVerifyDeep bool
 )
 
-var archiveCmd = &cobra.Command{
-	Use:   "archive [courseId...]",
-	Short: "Archive D2L courses into a global on-disk tree, fetching only changed documents",
-	Long: "Run an archive pass over your D2L courses. With no arguments, every course\n" +
-		"returned by the manageCourses API is archived; pass one or more OrgUnitIds as\n" +
-		"positional arguments to restrict the pass to specific courses.\n\n" +
-		"For each course the table of contents is fetched and compared against the\n" +
-		"saved toc.json; only topics whose LastModifiedDate has changed (or that are\n" +
-		"new) are downloaded. Output is written under ~/.config/schooltools/archive/,\n" +
-		"with a global index.json at the root.\n\n" +
-		"Subcommands:\n" +
-		"  list   show the saved index (was `archive --list`)\n\n" +
-		"Flags:\n" +
-		"  --diff  show what the next pass would fetch, without writing anything",
-	Args: cobra.ArbitraryArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if archiveDiff {
-			return runArchiveDiff(args)
-		}
-		return runArchive(args)
-	},
-}
-
-var archiveListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "Show the saved archive index without making any API requests",
-	Long:  "Print the saved archive index from the on-disk store. Useful for cron jobs that want to verify a previous archive run completed.",
-	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runArchiveList()
-	},
-}
+const staleThreshold = 24 * time.Hour
 
 func init() {
-	archiveCmd.Flags().StringVar(&archiveDir, "dir", archive.DefaultRoot(), "Archive root directory (default: ~/.config/schooltools/archive)")
-	archiveCmd.Flags().StringVarP(&archiveEnvFile, "env-file", "e", ".env", "Path to .env for auto-refresh")
-	archiveCmd.Flags().BoolVar(&archiveAutoRefresh, "auto-refresh", false, "Re-run 'login' if the session is expired")
-	archiveCmd.Flags().BoolVar(&archiveJSON, "json", false, "Emit a JSON summary instead of a table")
-	archiveCmd.Flags().BoolVar(&archiveDiff, "diff", false, "Show what the next archive pass would fetch, without writing anything")
-	archiveCmd.Flags().BoolVarP(&archiveVerbose, "verbose", "v", false, "Print per-topic progress to stderr")
-	archiveCmd.Flags().BoolVar(&archiveNoSpinner, "no-spinner", false, "Disable the spinner / progress bar")
-	archiveCmd.Flags().BoolVar(&archiveFiles, "files", true, "Also download each File topic's underlying bytes (PDF, DOCX, etc.) into blobs/<sha256>.bin")
+	archiveCmd.PersistentFlags().StringVar(&archiveDir, "dir", archive.DefaultRoot(), "Archive root directory (default: ~/.config/schooltools/archive)")
+	archiveCmd.PersistentFlags().BoolVar(&archiveJSON, "json", false, "Emit JSON envelopes (collections: {count, items}; records: object)")
+	archiveCmd.PersistentFlags().BoolVar(&archivePlain, "plain", false, "Emit TSV (header row + tab-separated values) for piping into fzf/cut/xargs")
+	archiveCmd.PersistentFlags().BoolVarP(&archiveQuiet, "quiet", "q", false, "Suppress non-essential stderr messages")
+	archiveCmd.PersistentFlags().BoolVarP(&archiveVerbose, "verbose", "v", false, "Print per-topic progress to stderr")
+	archiveCmd.PersistentFlags().BoolVar(&archiveNoSpinner, "no-spinner", false, "Disable the spinner / progress bar")
+	archiveCmd.PersistentFlags().StringArrayVar(&archiveCourses, "course", nil, "Restrict to one or more course OrgUnitIds (repeatable)")
 
-	archiveListCmd.Flags().StringVar(&archiveListDir, "dir", archive.DefaultRoot(), "Archive root directory (default: ~/.config/schooltools/archive)")
-	archiveListCmd.Flags().BoolVar(&archiveListJSON, "json", false, "Emit the raw index JSON instead of a table")
+	archiveUpdateCmd.Flags().BoolVar(&archiveUpdateDryRun, "dry-run", false, "Plan only; do not write to disk or fetch bodies")
+	archiveUpdateCmd.Flags().BoolVar(&archiveUpdateNoBodies, "no-bodies", false, "Skip file-body downloads (metadata only)")
+	archiveUpdateCmd.Flags().BoolVar(&archiveUpdateNoRefresh, "no-auto-refresh", false, "Do not re-run login if the saved session has expired")
+	archiveUpdateCmd.Flags().BoolVar(&archiveUpdateWait, "wait", false, "Block instead of failing when another archive run holds the lock")
 
-	archiveCmd.AddCommand(archiveListCmd, archiveTopicCmd, archiveReadCmd, archiveBodyCmd, archivePathCmd)
+	archiveFindCmd.Flags().StringVar(&archiveFindExt, "ext", "", "Filter by URL extension (e.g. pdf, docx)")
+	archiveFindCmd.Flags().StringVar(&archiveFindType, "type", "", "Filter by topic type (File, Link)")
+	archiveFindCmd.Flags().BoolVar(&archiveFindWith, "with-bodies", false, "Only show topics that have a file body archived")
+	archiveFindCmd.Flags().BoolVar(&archiveFindMiss, "missing-bodies", false, "Only show File topics whose body has never been archived")
+
+	archiveShowCmd.Flags().StringVar(&archiveShowKind, "kind", "", "Force the ref kind: metadata|body (default: auto-detect)")
+
+	archiveCatCmd.Flags().BoolVar(&archiveCatMeta, "meta", false, "Force the metadata blob instead of the file body")
+
+	archivePathCmd.Flags().StringVar(&archivePathKind, "kind", "", "Force the blob kind: metadata|body (auto-detected otherwise)")
+
+	archiveExportCmd.Flags().StringVar(&archiveExportOut, "out", "", "Destination directory (required)")
+	archiveExportCmd.Flags().BoolVar(&archiveExportFlat, "flat", false, "Skip the per-course folder layout")
+	archiveExportCmd.Flags().BoolVar(&archiveExportDryRun, "dry-run", false, "Print the copy plan without writing files")
+	archiveExportCmd.Flags().StringVar(&archiveExportExt, "ext", "", "Filter by URL extension")
+
+	archivePruneCmd.Flags().BoolVar(&archivePruneDelete, "delete", false, "Apply the prune (default: print the plan only)")
+	archivePruneCmd.Flags().BoolVar(&archivePruneWait, "wait", false, "Block instead of failing when another run holds the lock")
+
+	archiveVerifyCmd.Flags().BoolVar(&archiveVerifyDeep, "deep", false, "Re-hash every body blob and compare to its filename")
+
+	archiveCmd.AddCommand(
+		archiveUpdateCmd,
+		archiveListCmd,
+		archiveFindCmd,
+		archiveShowCmd,
+		archiveCatCmd,
+		archivePathCmd,
+		archiveExportCmd,
+		archivePruneCmd,
+		archiveVerifyCmd,
+	)
 	rootCmd.AddCommand(archiveCmd)
 }
 
-// archiveTopicCmd dumps a single archived topic's per-course index entry:
-// title, type, URL, last-modified, the current blob UUID, and the full
-// version history. Differs from `content get --archive <id>` which reads
-// the *blob* (raw D2L metadata JSON). `archive topic` reads the per-topic
-// pointer from `courses/<id>/index.json`.
-var (
-	archiveTopicDir    string
-	archiveTopicJSON   bool
-	archiveTopicCourse string
-	archiveTopicFiles  bool // print body-version history in the human table
-)
-
-var archiveTopicCmd = &cobra.Command{
-	Use:   "topic <topicId>",
-	Short: "Show the archived index entry for one topic (current blob + version history)",
-	Args:  cobra.ExactArgs(1),
+var archiveCmd = &cobra.Command{
+	Use:   "archive [command]",
+	Short: "Archive D2L courses into a global on-disk tree, fetch changed documents, search and export",
+	Long: "Snapshot your D2L courses into a versioned on-disk store.\n" +
+		"Bare `archive` shows store status (counts, missing bodies, freshness);\n" +
+		"`archive update` fetches new and changed documents; `archive find`,\n" +
+		"`archive show`, `archive cat`, `archive path`, `archive export`,\n" +
+		"`archive prune`, and `archive verify` cover lookup and maintenance.\n\n" +
+		"Examples:\n" +
+		"  schooltools archive                          # status\n" +
+		"  schooltools archive update                   # fetch everything\n" +
+		"  schooltools archive update 12345 67890       # fetch two courses\n" +
+		"  schooltools archive update --dry-run         # preview the plan\n" +
+		"  schooltools archive find safety contract     # search titles\n" +
+		"  schooltools archive cat 19448654 > doc.pdf   # bytes to stdout\n" +
+		"  schooltools archive export --out ~/pdfs --ext pdf",
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if archiveTopicDir == "" {
-			archiveTopicDir = archive.DefaultRoot()
-		}
-		if archiveTopicCourse == "" {
-			return fmt.Errorf("--course <orgUnitId> is required to look up archived topic %s", args[0])
-		}
-		tid, err := strconv.Atoi(args[0])
-		if err != nil {
-			return fmt.Errorf("invalid topicId %q: %w", args[0], err)
-		}
-		idx, err := archive.LoadCourseIndex(archiveTopicDir, archiveTopicCourse)
-		if err != nil {
-			return err
-		}
-		if idx == nil {
-			return fmt.Errorf("no archive at %s yet", archiveTopicDir)
-		}
-		t, ok := idx.Topics[tid]
-		if !ok || t == nil {
-			return fmt.Errorf("topic %d not found in archived course %s", tid, archiveTopicCourse)
-		}
-		if archiveTopicJSON {
-			out := map[string]any{
-				"topicId":       t.TopicID,
-				"title":         t.Title,
-				"type":          t.Type,
-				"url":           t.URL,
-				"current":       t.Current,
-				"versions":      t.Versions,
-				"currentBody":    t.CurrentBody,
-				"bodyVersions":  t.BodyVersions,
-				"courseId":      idx.CourseID,
-			}
-			b, _ := json.MarshalIndent(out, "", "  ")
-			fmt.Println(string(b))
-			return nil
-		}
-		fmt.Printf("Archived topic %d in course %s (%q)\n", t.TopicID, idx.CourseID, idx.Name)
-		fmt.Printf("  title:        %s\n", t.Title)
-		fmt.Printf("  type:         %s\n", t.Type)
-		if t.URL != "" {
-			fmt.Printf("  url:          %s\n", t.URL)
-		}
-		if !t.LastModified.IsZero() {
-			fmt.Printf("  lastModified: %s\n", t.LastModified.UTC().Format("2006-01-02T15:04:05Z"))
-		}
-		fmt.Printf("  metadata current: %s (latest of %d)\n\n", t.Current, len(t.Versions))
-		for i, v := range t.Versions {
-			fmt.Printf("  meta v%d  uuid=%s  size=%d  savedAt=%s\n",
-				i+1, v.UUID, v.Size, v.SavedAt.UTC().Format("2006-01-02T15:04:05Z"))
-			if !v.LastModified.IsZero() {
-				fmt.Printf("       lastModified=%s\n", v.LastModified.UTC().Format("2006-01-02T15:04:05Z"))
-			}
-		}
-		if archiveTopicFiles && t.CurrentBody != "" {
-			fmt.Printf("\n  body current:   %s (latest of %d)\n", t.CurrentBody, len(t.BodyVersions))
-			fmt.Printf("  body path:      %s\n", archive.BodyPath(archiveTopicDir, t.CurrentBody))
-			for i, bv := range t.BodyVersions {
-				ct := ""
-				if bv.ContentType != "" {
-					ct = "  type=" + bv.ContentType
-				}
-				fmt.Printf("  body v%d  sha=%s  size=%d  downloadedAt=%s%s\n",
-					i+1, bv.SHA256, bv.Size, bv.DownloadedAt.UTC().Format("2006-01-02T15:04:05Z"), ct)
-			}
-		} else if archiveTopicFiles && t.URL != "" && t.Type == "File" {
-			fmt.Println("\n  (no file body archived yet — run `schooltools archive` with --files to add one)")
-		}
-		return nil
+		return runArchiveStatus()
 	},
 }
 
-func init() { //nolint:revive  // supplemental init runs after the main one.
-	archiveTopicCmd.Flags().StringVar(&archiveTopicDir, "dir", archive.DefaultRoot(), "Archive root directory (default: ~/.config/schooltools/archive)")
-	archiveTopicCmd.Flags().StringVar(&archiveTopicCourse, "course", "", "Course OrgUnitId to look the topic up under (required)")
-	archiveTopicCmd.Flags().BoolVar(&archiveTopicJSON, "json", false, "Emit JSON instead of the human table")
-archiveTopicCmd.Flags().BoolVar(&archiveTopicFiles, "files", true, "Print body-version history in the human table")
-
-	// `archive read <uuid>` — fetch one metadata blob by its UUID and print to stdout.
-	archiveReadCmd.Flags().StringVar(&archiveReadDir, "dir", archive.DefaultRoot(), "Archive root directory (default: ~/.config/schooltools/archive)")
-
-	// `archive body <sha256>` — fetch one file body by its content hash and
-	// print to stdout. Use `archive path <sha256>` for the on-disk path.
-	archiveBodyCmd.Flags().StringVar(&archiveBodyDir, "dir", archive.DefaultRoot(), "Archive root directory (default: ~/.config/schooltools/archive)")
-
-	// `archive path <id>` — print the absolute local path. Auto-detects
-	// metadata blobs (32-char hex UUIDs → blobs/<uuid>.json) and file
-	// bodies (64-char hex SHA-256 → blobs/<sha256>.bin). For CourseId/
-	// TopicId lookups, use `archive topic --course <id> <topicId>` first
-	// to discover the UUID/SHA, then pipe into this command.
-	archivePathCmd.Flags().StringVar(&archivePathDir, "dir", archive.DefaultRoot(), "Archive root directory (default: ~/.config/schooltools/archive)")
-}
-
-// `archive read` dumps one metadata blob to stdout. The `--out` flag
-// from earlier was dropped; callers who want a file copy should use
-// `archive path <uuid>` then `cp` (or `archive body <sha>` for files).
-var archiveReadDir string
-
-var archiveReadCmd = &cobra.Command{
-	Use:   "read <uuid>",
-	Short: "Read a single archived metadata blob by UUID; print to stdout",
-	Long: "Dump the raw bytes of one metadata blob from the archive. UUIDs are\n" +
-		"listed in `archive topic --course <id> <topicId>` (field `current`) and the\n" +
-		"per-course index.json. Pretty-prints JSON; prints verbatim otherwise.",
-	Args: cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if archiveReadDir == "" {
-			archiveReadDir = archive.DefaultRoot()
-		}
-		blob, err := archive.LoadBlob(archiveReadDir, args[0])
-		if err != nil {
-			return err
-		}
-		if blob == nil {
-			return fmt.Errorf("no metadata blob found for uuid %s", args[0])
-		}
-		var parsed any
-		if json.Unmarshal(blob, &parsed) == nil {
-			out, _ := json.MarshalIndent(parsed, "", "  ")
+func runArchiveStatus() error {
+	st, err := archive.LoadStatus(archiveDir)
+	if err != nil {
+		return err
+	}
+	if !st.Exists {
+		if archiveJSON {
+			out, _ := json.MarshalIndent(st, "", "  ")
 			fmt.Println(string(out))
 			return nil
 		}
-		fmt.Println(string(blob))
+		fmt.Printf("No archive yet at %s\n", st.Root)
+		fmt.Println("Run `schooltools archive update` to start.")
 		return nil
-	},
-}
-
-// --- `archive path <id>` ---
-//
-// Prints the absolute local path to an archive blob so callers can use it
-// in shell pipelines (e.g. `cat "$(schooltools archive path $(...))"`).
-// Auto-detects what kind of blob the ID refers to: a 32-char hex string
-// is a metadata blob UUID (random 128-bit identifier); a 64-char hex
-// string is a SHA-256 file-body hash. Unknown lengths fall through to
-// the metadata-blob path because the blob directory is the same for
-// both.
-var archivePathDir string
-
-var archivePathCmd = &cobra.Command{
-	Use:   "path <id>",
-	Short: "Print the absolute local path to an archive blob (metadata UUID or body SHA-256)",
-	Long: "Print the on-disk location of one archive blob. Use this to feed the path\n" +
-		"into other shell commands without first writing through --out.\n\n" +
-		"Detection rules:\n" +
-		"  • 32-char hex string  → metadata blob at <root>/blobs/<id>.json\n" +
-		"  • 64-char hex string  → file body at <root>/blobs/<id>.bin\n" +
-		"  • any other length    → treated as a metadata blob (may not exist)\n\n" +
-		"To copy a file out of the archive:\n" +
-		"  cp \"$(schooltools archive path <sha256>)\" ~/my-folder/\n" +
-		"or pipe directly:\n" +
-		"  cat \"$(schooltools archive path <sha256>)\" | less",
-	Args: cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if archivePathDir == "" {
-			archivePathDir = archive.DefaultRoot()
-		}
-		abs, err := filepath.Abs(archivePathDir)
-		if err != nil {
-			return fmt.Errorf("resolve archive dir: %w", err)
-		}
-		id := strings.TrimSpace(args[0])
-		var blobPath string
-		switch len(id) {
-		case 64:
-			// SHA-256 → file body
-			blobPath = archive.BodyPath(abs, id)
-		default:
-			// 32-char UUID → metadata blob
-			blobPath = archive.MetadataBlobPath(abs, id)
-		}
-		// Best-effort existence check: print exists/not alongside the
-		// path so callers know whether the lookup was successful.
-		if _, statErr := os.Stat(blobPath); statErr != nil {
-			if os.IsNotExist(statErr) {
-				fmt.Fprintf(os.Stderr, "warning: %s does not exist on disk (path printed anyway)\n", blobPath)
-			} else {
-				return statErr
-			}
-		}
-		fmt.Println(blobPath)
-		return nil
-	},
-}
-
-// --- `archive body <sha256>` ---
-
-var archiveBodyDir string
-
-var archiveBodyCmd = &cobra.Command{
-	Use:   "body <sha256>",
-	Short: "Read a single archived file body by SHA-256, print to stdout",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if archiveBodyDir == "" {
-			archiveBodyDir = archive.DefaultRoot()
-		}
-		abs, err := filepath.Abs(archiveBodyDir)
-		if err != nil {
-			return fmt.Errorf("resolve archive dir: %w", err)
-		}
-		body, err := archive.LoadFileBody(abs, args[0])
-		if err != nil {
-			return err
-		}
-		if body == nil {
-			return fmt.Errorf("no body saved for sha256 %s (run `schooltools archive` with --files)", args[0])
-		}
-		_, err = os.Stdout.Write(body)
-		return err
-	},
-}
-
-// runArchiveDiff previews what the next archive pass would do without
-// fetching any topic bodies or writing any state. Same auth + lock as Run.
-func runArchiveDiff(args []string) error {
-	if archiveDir == "" {
-		archiveDir = archive.DefaultRoot()
 	}
-	abs, err := filepath.Abs(archiveDir)
-	if err != nil {
-		return fmt.Errorf("resolve archive dir: %w", err)
-	}
-	lock, err := archive.TryLock(abs)
-	if err != nil {
-		if errors.Is(err, archive.ErrAlreadyRunning) {
-			fmt.Fprintln(os.Stderr, "Another archive run is in progress; exiting cleanly.")
-			return nil
-		}
-		return fmt.Errorf("acquire archive lock: %w", err)
-	}
-	defer func() { _ = lock.Release() }()
-
-	ens, err := session.EnsureSession(session.EnsureOptions{
-		EnvFile:     archiveEnvFile,
-		AutoRefresh: archiveAutoRefresh,
-		KMSI:        true,
-		LoginFn:     loginFn,
-	})
-	if err != nil {
-		return err
-	}
-
-	start := time.Now()
-	result, err := archive.Diff(archive.Options{
-		Root:      abs,
-		Jar:       ens.Jar,
-		Verbose:   archiveVerbose,
-		Quiet:     archiveJSON,
-		CourseIDs: args,
-	})
-	if err != nil {
-		return err
-	}
-	elapsed := time.Since(start)
 
 	if archiveJSON {
-		out, _ := json.MarshalIndent(map[string]any{
-			"root":             result.Root,
-			"courseIds":        args,
-			"allCourses":       len(args) == 0,
-			"coursesScanned":   result.CoursesScanned,
-			"topicsChecked":    result.TopicsChecked,
-			"topicsWouldFetch": result.TopicsWouldFetch,
-			"topicsUnchanged":  result.TopicsStale,
-			"elapsedSeconds":   elapsed.Seconds(),
-			"perCourse":        result.PerCourse,
-		}, "", "  ")
+		out, _ := json.MarshalIndent(st, "", "  ")
 		fmt.Println(string(out))
 		return nil
 	}
 
-	var out string
-	rows := make([][]string, 0, len(result.PerCourse))
-	for _, c := range result.PerCourse {
-		var fetchIDs string
-		if len(c.WouldFetchIDs) > 0 {
-			fetchIDs = fmt.Sprintf("%d topics", len(c.WouldFetchIDs))
-		} else {
-			fetchIDs = "—"
-		}
-		rows = append(rows, []string{
-			c.CourseID,
-			c.CourseCode,
-			c.CourseName,
-			fmt.Sprintf("%d", c.TopicsTotal),
-			fmt.Sprintf("%d", c.TopicsNew),
-			fmt.Sprintf("%d", c.TopicsModified),
-			fmt.Sprintf("%d", c.TopicsUnchanged),
-			fetchIDs,
-		})
+	freshness := relTime(st.UpdatedAt)
+	stalenessWarn := ""
+	if !st.UpdatedAt.IsZero() && time.Since(st.UpdatedAt) > staleThreshold {
+		stalenessWarn = "  (stale — run `archive update`)"
 	}
-	if len(rows) > 0 {
-		out = table.Render(table.Options{
-			Headers: []string{"ID", "Code", "Name", "Total", "New", "Modified", "Unchanged", "WouldFetch"},
-			Widths: table.Widths([]table.ColumnSpec{
-				table.Fixed(8), table.Fixed(10), table.Flex(24),
-				table.Fixed(6), table.Fixed(5), table.Fixed(9), table.Fixed(10), table.Flex(8),
-			}, table.TerminalWidth()),
-			Rows: rows,
-		})
+	fmt.Printf("Archive at %s\n", st.Root)
+	if st.UpdatedAt.IsZero() {
+		fmt.Println("Last update: never")
 	} else {
-		out = "(no courses matched)\n"
+		fmt.Printf("Last update: %s%s\n", freshness, stalenessWarn)
 	}
-	fmt.Print(out)
-
-	fmt.Printf("\nWould scan %d course%s in %s\n",
-		result.CoursesScanned, plural(result.CoursesScanned), elapsed.Round(time.Millisecond))
-	fmt.Printf("Topics: %d checked, %d would fetch, %d unchanged\n",
-		result.TopicsChecked, result.TopicsWouldFetch, result.TopicsStale)
-	if result.TopicsWouldFetch == 0 {
-		fmt.Println("Nothing to do — your archive is up to date.")
+	fmt.Printf("Schema: v%d (store v%d)\n", st.SchemaVersion, st.StoreVersion)
+	fmt.Printf("Courses: %d    Topics: %d    File topics: %d\n", st.Courses, st.Topics, st.FileTopics)
+	fmt.Printf("Bodies: %d present, %d missing\n", st.BodiesPresent, st.MissingBodies)
+	fmt.Printf("Blobs:  %d metadata (%s) + %d bodies (%s)\n",
+		st.MetaBlobs, humanBytes(st.MetaBytes),
+		st.BodyBlobs, humanBytes(st.BodyBytes))
+	if st.LockHeld {
+		fmt.Println("Lock:   held by another run")
 	} else {
-		fmt.Printf("Run `schooltools archive` (without --diff) to fetch these.\n")
+		fmt.Println("Lock:   free")
 	}
+	fmt.Println()
+	fmt.Println("Try next:")
+	if st.MissingBodies > 0 {
+		fmt.Printf("  schooltools archive update --course %s   # fill %d missing body\n",
+			pickFirstCourse(st), st.MissingBodies)
+	}
+	if st.FileTopics > 0 {
+		fmt.Printf("  schooltools archive find --type File --with-bodies --plain | fzf\n")
+	}
+	fmt.Println("  schooltools archive verify                 # integrity check")
+	fmt.Println("  schooltools archive prune                  # plan; --delete to apply")
 	return nil
 }
 
-// runArchive does the actual fetch pass.
-func runArchive(args []string) error {
-	if archiveDir == "" {
-		archiveDir = archive.DefaultRoot()
+func pickFirstCourse(st archive.Status) string {
+	store, err := archive.OpenStore(st.Root)
+	if err != nil || store == nil {
+		return "<courseId>"
 	}
+	for _, cid := range archive.SortedCourseIDs(store.Index) {
+		return cid
+	}
+	return "<courseId>"
+}
+
+var archiveUpdateCmd = &cobra.Command{
+	Use:   "update [courseId...]",
+	Short: "Fetch new and changed documents (and any missing file bodies) into the archive",
+	Long: "Run an archive pass over your D2L courses. Default scope is every course\n" +
+		"returned by the manageCourses API; pass one or more OrgUnitIds as positional\n" +
+		"arguments or via repeated --course to restrict the pass.\n\n" +
+		"`archive update` converges: it downloads bodies for any File topic whose\n" +
+		"body is missing on disk, even when its metadata is unchanged. Pass\n" +
+		"--no-bodies to skip body downloads. Pass --dry-run to preview without\n" +
+		"writing.\n\n" +
+		"Examples:\n" +
+		"  schooltools archive update\n" +
+		"  schooltools archive update 12345 67890\n" +
+		"  schooltools archive update --course 12345 --dry-run\n" +
+		"  schooltools archive update --no-bodies --no-auto-refresh",
+	Args: cobra.ArbitraryArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runArchiveUpdate(args)
+	},
+}
+
+func runArchiveUpdate(args []string) error {
 	abs, err := filepath.Abs(archiveDir)
 	if err != nil {
-		return fmt.Errorf("resolve archive dir: %w", err)
+		return err
 	}
 
-	// Guard against two archive runs racing (timer + manual invocation).
-	lock, err := archive.TryLock(abs)
+	lock, err := acquireLock(abs, archiveUpdateWait)
 	if err != nil {
 		if errors.Is(err, archive.ErrAlreadyRunning) {
-			_ = authlog.Log("archive.skipped", map[string]any{"reason": "lock_held", "root": abs})
-			fmt.Fprintln(os.Stderr, "Another archive run is in progress; exiting cleanly.")
-			return nil
+			if archiveUpdateDryRun {
+				return fmt.Errorf("another archive run holds the lock at %s; re-run with --wait to block", archive.LockPath(abs))
+			}
+			return fmt.Errorf("another archive run holds the lock at %s; re-run with --wait to block", archive.LockPath(abs))
 		}
 		return fmt.Errorf("acquire archive lock: %w", err)
 	}
-	defer func() { _ = lock.Release() }()
+	if lock != nil {
+		defer func() { _ = lock.Release() }()
+	}
+
+	if archiveUpdateDryRun {
+		return runArchiveUpdateDryRun(args, abs)
+	}
 
 	ens, err := session.EnsureSession(session.EnsureOptions{
 		EnvFile:     archiveEnvFile,
-		AutoRefresh: archiveAutoRefresh,
+		AutoRefresh: !archiveUpdateNoRefresh,
 		KMSI:        true,
 		LoginFn:     loginFn,
 	})
@@ -449,21 +255,22 @@ func runArchive(args []string) error {
 	}
 
 	var hud *ui.Progress
-	if !archiveNoSpinner && !archiveJSON {
-		hud = ui.NewProgress(ui.ProgressOptions{Title: archiveTitle(args)})
+	if !archiveNoSpinner && !archiveJSON && !archiveQuiet {
+		hud = ui.NewProgress(ui.ProgressOptions{Title: archiveTitle(append([]string{}, args...), archiveCourses)})
 		hud.Start()
 		defer hud.Stop()
 	}
 
+	scope := mergeScope(args, archiveCourses)
 	start := time.Now()
 	result, err := archive.Run(archive.Options{
 		Root:          abs,
 		Jar:           ens.Jar,
 		Verbose:       archiveVerbose,
-		Quiet:         archiveJSON,
-		CourseIDs:     args,
+		Quiet:         archiveJSON || archiveQuiet,
+		CourseIDs:     scope,
 		Progress:      progressAdapter(hud),
-		DownloadFiles: archiveFiles,
+		DownloadFiles: !archiveUpdateNoBodies,
 	})
 	if err != nil {
 		return err
@@ -473,8 +280,7 @@ func runArchive(args []string) error {
 	if archiveJSON {
 		out, _ := json.MarshalIndent(map[string]any{
 			"root":           result.Root,
-			"courseIds":      args,
-			"allCourses":     len(args) == 0,
+			"courseIds":      scope,
 			"coursesScanned": result.CoursesScanned,
 			"topicsChecked":  result.TopicsChecked,
 			"topicsFetched":  result.TopicsFetched,
@@ -493,16 +299,846 @@ func runArchive(args []string) error {
 		result.CoursesScanned, plural(result.CoursesScanned), elapsed.Round(time.Millisecond))
 	fmt.Printf("Topics: %d checked, %d fetched, %d unchanged\n",
 		result.TopicsChecked, result.TopicsFetched, result.TopicsStale)
-	if archiveFiles {
+	if !archiveUpdateNoBodies && result.BodiesFetched+result.BodiesReused+result.BodiesFailed > 0 {
 		fmt.Printf("File bodies: %d new, %d unchanged (same SHA), %d errors\n",
 			result.BodiesFetched, result.BodiesReused, result.BodiesFailed)
+	} else if archiveUpdateNoBodies {
+		fmt.Println("File bodies: skipped (--no-bodies)")
+	} else {
+		fmt.Println("File bodies: 0 fetched (no eligible File topics this pass).")
 	}
 	return nil
 }
 
-// progressAdapter wires the package's ProgressEvent stream to the HUD. The
-// adapter is nil-safe: when hud is nil we return nil so the archive package
-// skips the callback entirely.
+func runArchiveUpdateDryRun(args []string, abs string) error {
+	ens, err := session.EnsureSession(session.EnsureOptions{
+		EnvFile:     archiveEnvFile,
+		AutoRefresh: !archiveUpdateNoRefresh,
+		KMSI:        true,
+		LoginFn:     loginFn,
+	})
+	if err != nil {
+		return err
+	}
+	scope := mergeScope(args, archiveCourses)
+	start := time.Now()
+	result, err := archive.Diff(archive.Options{
+		Root:      abs,
+		Jar:       ens.Jar,
+		Verbose:   archiveVerbose,
+		Quiet:     archiveJSON || archiveQuiet,
+		CourseIDs: scope,
+	})
+	if err != nil {
+		return err
+	}
+	elapsed := time.Since(start)
+
+	if archiveJSON {
+		out, _ := json.MarshalIndent(map[string]any{
+			"root":             result.Root,
+			"courseIds":        scope,
+			"coursesScanned":   result.CoursesScanned,
+			"topicsChecked":    result.TopicsChecked,
+			"topicsWouldFetch": result.TopicsWouldFetch,
+			"topicsUnchanged":  result.TopicsStale,
+			"bodiesWouldFetch": result.BodiesWouldFetch,
+			"elapsedSeconds":   elapsed.Seconds(),
+			"perCourse":        result.PerCourse,
+		}, "", "  ")
+		fmt.Println(string(out))
+		return nil
+	}
+
+	printUpdateDryRunTable(result)
+	fmt.Printf("\nWould scan %d course%s in %s\n",
+		result.CoursesScanned, plural(result.CoursesScanned), elapsed.Round(time.Millisecond))
+	fmt.Printf("Topics: %d checked, %d would fetch, %d unchanged\n",
+		result.TopicsChecked, result.TopicsWouldFetch, result.TopicsStale)
+	if result.BodiesWouldFetch > 0 {
+		fmt.Printf("Bodies: %d would fill (convergence)\n", result.BodiesWouldFetch)
+	}
+	if result.TopicsWouldFetch == 0 && result.BodiesWouldFetch == 0 {
+		fmt.Println("Nothing to do — your archive is up to date.")
+	} else {
+		fmt.Println("Re-run without --dry-run to apply.")
+	}
+	return nil
+}
+
+func printUpdateDryRunTable(result archive.DiffResult) {
+	rows := make([][]string, 0, len(result.PerCourse))
+	for _, c := range result.PerCourse {
+		fetch := "—"
+		if len(c.WouldFetchIDs) > 0 {
+			fetch = fmt.Sprintf("%d topics", len(c.WouldFetchIDs))
+		}
+		bodies := "—"
+		if c.BodiesWouldFetch > 0 {
+			bodies = fmt.Sprintf("%d bodies", c.BodiesWouldFetch)
+		}
+		rows = append(rows, []string{
+			c.CourseID, c.CourseCode, c.CourseName,
+			fmt.Sprintf("%d", c.TopicsTotal),
+			fmt.Sprintf("%d", c.TopicsNew),
+			fmt.Sprintf("%d", c.TopicsModified),
+			fmt.Sprintf("%d", c.TopicsUnchanged),
+			fetch, bodies,
+		})
+	}
+	if len(rows) == 0 {
+		fmt.Println("(no courses matched)")
+		return
+	}
+	out := table.Render(table.Options{
+		Headers: []string{"ID", "Code", "Name", "Total", "New", "Modified", "Unchanged", "WouldFetch", "Bodies"},
+		Widths: table.Widths([]table.ColumnSpec{
+			table.Fixed(8), table.Fixed(8), table.Flex(20),
+			table.Fixed(6), table.Fixed(5), table.Fixed(9),
+			table.Fixed(10), table.Fixed(10), table.Flex(8),
+		}, table.TerminalWidth()),
+		Rows: rows,
+	})
+	fmt.Print(out)
+}
+
+var archiveListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "Show the saved archive index without making any API requests",
+	Long: "Print every course known to the archive index. Without --json or --plain,\n" +
+		"output is a fitted table; use `archive status` for freshness + missing bodies.\n\n" +
+		"Examples:\n" +
+		"  schooltools archive list\n" +
+		"  schooltools archive list --json | jq '.items[].code'",
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runArchiveList()
+	},
+}
+
+func runArchiveList() error {
+	store, err := archive.OpenStore(archiveDir)
+	if err != nil {
+		return err
+	}
+	cids := storeCourses(store)
+	if len(cids) == 0 {
+		if archiveJSON {
+			fmt.Println(`{"count":0,"items":[]}`)
+			return nil
+		}
+		if archivePlain {
+			fmt.Println("id\tcode\tname\tactive\ttopics\ttoc")
+			return nil
+		}
+		fmt.Printf("No archive at %s yet — run `schooltools archive update`.\n", store.Root)
+		return nil
+	}
+	if archiveJSON {
+		items := make([]archive.IndexEntry, 0, len(cids))
+		for _, cid := range cids {
+			ci := store.Courses[cid]
+			e := store.Index.Courses[cid]
+			if e == nil {
+				e = &archive.IndexEntry{OrgUnitId: cid, Name: ci.Name, Code: ci.Code, IsActive: ci.IsActive}
+			}
+			items = append(items, *e)
+		}
+		out, _ := json.MarshalIndent(map[string]any{
+			"count":     len(items),
+			"items":     items,
+			"updatedAt": store.Index.UpdatedAt,
+			"root":      store.Root,
+		}, "", "  ")
+		fmt.Println(string(out))
+		return nil
+	}
+	if archivePlain {
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, '\t', 0)
+		fmt.Fprintln(w, "id\tcode\tname\tactive\ttopics\ttoc")
+		for _, cid := range cids {
+			e := store.Index.Courses[cid]
+			ci := store.Courses[cid]
+			toc := ""
+			if e != nil && !e.TocFetchedAt.IsZero() {
+				toc = relTime(e.TocFetchedAt)
+			}
+			active := "yes"
+			if ci != nil && !ci.IsActive {
+				active = "no"
+			}
+			row := e
+			if row == nil {
+				row = &archive.IndexEntry{Name: ci.Name, Code: ci.Code}
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\n",
+				cid, row.Code, row.Name, active, len(ci.Topics), toc)
+		}
+		return w.Flush()
+	}
+	rows := make([][]string, 0, len(cids))
+	for _, cid := range cids {
+		e := store.Index.Courses[cid]
+		ci := store.Courses[cid]
+		active := "—"
+		if ci != nil && ci.IsActive {
+			active = "yes"
+		}
+		toc := "—"
+		if e != nil && !e.TocFetchedAt.IsZero() {
+			toc = relTime(e.TocFetchedAt)
+		}
+		rows = append(rows, []string{
+			cid, active, codeOf(e, ci), nameOf(e, ci),
+			fmt.Sprintf("%d", len(ci.Topics)),
+			toc,
+		})
+	}
+	out := table.Render(table.Options{
+		Headers: []string{"ID", "Active", "Code", "Name", "Topics", "TOC fetched"},
+		Widths: table.Widths([]table.ColumnSpec{
+			table.Fixed(8), table.Fixed(6), table.Fixed(8), table.Flex(20), table.Fixed(6), table.Flex(10),
+		}, table.TerminalWidth()),
+		Rows: rows,
+	})
+	fmt.Print(out)
+	return nil
+}
+
+func codeOf(e *archive.IndexEntry, ci *archive.CourseIndex) string {
+	if e != nil && e.Code != "" {
+		return e.Code
+	}
+	if ci != nil {
+		return ci.Code
+	}
+	return "—"
+}
+
+func nameOf(e *archive.IndexEntry, ci *archive.CourseIndex) string {
+	if e != nil && e.Name != "" {
+		return e.Name
+	}
+	if ci != nil {
+		return ci.Name
+	}
+	return "—"
+}
+
+func storeCourses(store *archive.Store) []string {
+	if len(archiveCourses) > 0 {
+		want := map[string]struct{}{}
+		for _, c := range archiveCourses {
+			want[strings.TrimSpace(c)] = struct{}{}
+		}
+		out := []string{}
+		for _, cid := range storeCoursesAll(store) {
+			if _, ok := want[cid]; ok {
+				out = append(out, cid)
+			}
+		}
+		return out
+	}
+	return storeCoursesAll(store)
+}
+
+func storeCoursesAll(store *archive.Store) []string {
+	out := make([]string, 0, len(store.Courses))
+	for cid := range store.Courses {
+		out = append(out, cid)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ai, _ := strconv.Atoi(out[i])
+		aj, _ := strconv.Atoi(out[j])
+		if ai != 0 && aj != 0 {
+			return ai < aj
+		}
+		return out[i] < out[j]
+	})
+	return out
+}
+
+var archiveFindCmd = &cobra.Command{
+	Use:   "find [query...]",
+	Short: "Search archived topics by title / URL / type",
+	Long: "Walk every course's index once and match topics whose title, URL, or\n" +
+		"type contains all whitespace-separated query tokens (case-insensitive).\n" +
+		"All tokens must match (AND). Use --ext to filter by file extension,\n" +
+		"--type File|Link to filter by topic type, --with-bodies for topics\n" +
+		"with an archived file body, --missing-bodies for File topics whose\n" +
+		"body has never been archived.\n\n" +
+		"Examples:\n" +
+		"  schooltools archive find safety contract\n" +
+		"  schooltools archive find --type File --ext pdf\n" +
+		"  schooltools archive find --with-bodies --plain | fzf",
+	Args: cobra.ArbitraryArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runArchiveFind(args)
+	},
+}
+
+func runArchiveFind(args []string) error {
+	store, err := archive.OpenStore(archiveDir)
+	if err != nil {
+		return err
+	}
+	q := archive.SearchQuery{
+		Terms:         strings.Join(args, " "),
+		Ext:           archiveFindExt,
+		CourseIDs:     archiveCourses,
+		Type:          archiveFindType,
+		WithBodies:    archiveFindWith,
+		MissingBodies: archiveFindMiss,
+	}
+	hits := store.Search(q)
+
+	if archiveJSON {
+		out, _ := json.MarshalIndent(map[string]any{
+			"count": len(hits),
+			"items": hits,
+		}, "", "  ")
+		fmt.Println(string(out))
+		return nil
+	}
+	if archivePlain {
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, '\t', 0)
+		fmt.Fprintln(w, "topicId\tcourse\tcode\text\thasBody\ttitle\turl")
+		for _, h := range hits {
+			ext := strings.TrimPrefix(filepath.Ext(h.URL), ".")
+			if ext == "" {
+				ext = "—"
+			}
+			hb := "—"
+			if h.HasBody {
+				hb = "yes"
+			}
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				h.TopicID, h.CourseID, h.CourseCode, ext, hb, h.Title, h.URL)
+		}
+		return w.Flush()
+	}
+	if len(hits) == 0 {
+		fmt.Println("No topics matched.")
+		return nil
+	}
+	rows := make([][]string, len(hits))
+	for i, h := range hits {
+		ext := strings.TrimPrefix(filepath.Ext(h.URL), ".")
+		if ext == "" {
+			ext = "—"
+		}
+		hb := "—"
+		if h.HasBody {
+			hb = "yes"
+		}
+		rows[i] = []string{
+			fmt.Sprintf("%d", h.TopicID),
+			h.CourseCode,
+			ext,
+			h.Type,
+			hb,
+			relTime(h.LastModified),
+			truncate(h.Title, 50),
+		}
+	}
+	out := table.Render(table.Options{
+		Headers: []string{"TopicId", "Code", "Ext", "Type", "Body", "Modified", "Title"},
+		Widths: table.Widths([]table.ColumnSpec{
+			table.Fixed(8), table.Fixed(8), table.Fixed(6),
+			table.Fixed(6), table.Fixed(6), table.Flex(10), table.Flex(24),
+		}, table.TerminalWidth()),
+		Rows: rows,
+	})
+	fmt.Print(out)
+	fmt.Printf("\n%d match%s\n", len(hits), plural(len(hits)))
+	return nil
+}
+
+var archiveShowCmd = &cobra.Command{
+	Use:   "show <ref>",
+	Short: "Show one archived topic's record, current blob pointers, and version history",
+	Long: "<ref> is auto-detected: a numeric topicId, a 32-hex metadata uuid, or a\n" +
+		"64-hex body sha256. --kind forces metadata|body when ambiguous.\n\n" +
+		"Examples:\n" +
+		"  schooltools archive show 19448654\n" +
+		"  schooltools archive show 13d4b7a480969f146225f65e811a3621\n" +
+		"  schooltools archive show c1a8e46b…472b --kind body",
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runArchiveShow(args[0])
+	},
+}
+
+func runArchiveShow(ref string) error {
+	store, err := archive.OpenStore(archiveDir)
+	if err != nil {
+		return err
+	}
+	res, err := store.Resolve(ref, archiveShowKind)
+	if err != nil {
+		return err
+	}
+	if res.Ref.Topic == nil {
+		return fmt.Errorf("%w (try: schooltools archive find <title words>)", err)
+	}
+	t := res.Ref.Topic
+	if archiveJSON {
+		out := map[string]any{
+			"topicId":      t.TopicID,
+			"title":        t.Title,
+			"type":         t.Type,
+			"url":          t.URL,
+			"lastModified": t.LastModified,
+			"current":      t.Current,
+			"versions":     t.Versions,
+			"currentBody":  t.CurrentBody,
+			"bodyVersions": t.BodyVersions,
+			"courseId":     res.Ref.CourseID,
+			"courseCode":   res.Ref.CourseCode,
+			"courseName":   res.Ref.CourseName,
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(b))
+		return nil
+	}
+	if archivePlain {
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, '\t', 0)
+		fmt.Fprintln(w, "topicId\tcourse\tcode\ttitle\ttype\tcurrent\tcurrentBody\tversions\tbodyVersions")
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\n",
+			t.TopicID, res.Ref.CourseID, res.Ref.CourseCode, t.Title, t.Type,
+			t.Current, t.CurrentBody, len(t.Versions), len(t.BodyVersions))
+		return w.Flush()
+	}
+	fmt.Printf("Archived topic %d in course %s (%s, %q)\n",
+		t.TopicID, res.Ref.CourseID, res.Ref.CourseCode, res.Ref.CourseName)
+	if t.Title != "" {
+		fmt.Printf("  title:        %s\n", t.Title)
+	}
+	fmt.Printf("  type:         %s\n", t.Type)
+	if t.URL != "" {
+		fmt.Printf("  url:          %s\n", t.URL)
+	}
+	if !t.LastModified.IsZero() {
+		fmt.Printf("  lastModified: %s (%s)\n",
+			t.LastModified.UTC().Format("2006-01-02T15:04:05Z"), relTime(t.LastModified))
+	}
+	fmt.Printf("\n  metadata current: %s (%d version%s on record)\n",
+		t.Current, len(t.Versions), plural(len(t.Versions)))
+	for i, v := range t.Versions {
+		fmt.Printf("    meta v%-3d uuid=%s  size=%d  saved=%s",
+			i+1, v.UUID, v.Size, v.SavedAt.UTC().Format("2006-01-02T15:04:05Z"))
+		if !v.LastModified.IsZero() {
+			fmt.Printf("  lastMod=%s", v.LastModified.UTC().Format("2006-01-02T15:04:05Z"))
+		}
+		fmt.Println()
+	}
+	if t.CurrentBody != "" {
+		fmt.Printf("\n  body current:    %s (%d version%s on record)\n",
+			t.CurrentBody, len(t.BodyVersions), plural(len(t.BodyVersions)))
+		fmt.Printf("  body path:       %s\n", archive.BodyPath(archiveDir, t.CurrentBody))
+		for i, b := range t.BodyVersions {
+			ct := ""
+			if b.ContentType != "" {
+				ct = "  type=" + b.ContentType
+			}
+			fmt.Printf("    body v%-3d sha=%s  size=%d  downloaded=%s%s\n",
+				i+1, b.SHA256, b.Size, b.DownloadedAt.UTC().Format("2006-01-02T15:04:05Z"), ct)
+		}
+	} else if t.Type == "File" && t.URL != "" {
+		fmt.Println("\n  (no file body archived yet — run `archive update` to fill it)")
+	}
+	return nil
+}
+
+var archiveCatCmd = &cobra.Command{
+	Use:   "cat <ref>",
+	Short: "Write a topic's bytes (File) or pretty-printed JSON (any other type) to stdout",
+	Long: "<ref> accepts the same grammar as `archive show`. For File topics with an\n" +
+		"archived body, the raw bytes are written to stdout (redirect to a .pdf,\n" +
+		".docx, etc.). For everything else the metadata blob is pretty-printed.\n" +
+		"--meta forces the metadata blob even for File topics.\n\n" +
+		"Examples:\n" +
+		"  schooltools archive cat 19448654 > contract.pdf\n" +
+		"  schooltools archive cat 13d4b7a480969f146225f65e811a3621 | jq",
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runArchiveCat(args[0])
+	},
+}
+
+func runArchiveCat(ref string) error {
+	store, err := archive.OpenStore(archiveDir)
+	if err != nil {
+		return err
+	}
+	res, err := store.Resolve(ref, "")
+	if err != nil {
+		return err
+	}
+	if archiveCatMeta {
+		res.Kind = "metadata"
+		res.BlobPath = archive.MetadataBlobPath(archiveDir, res.BlobID)
+	}
+	if res.Kind == "body" && res.Ref.Topic != nil && !archiveCatMeta {
+		body, err := archive.LoadFileBody(archiveDir, res.BlobID)
+		if err != nil {
+			return err
+		}
+		if body == nil {
+			return fmt.Errorf("topic %d has currentBody %s but the body blob is missing on disk", res.Ref.Topic.TopicID, res.BlobID)
+		}
+		_, err = os.Stdout.Write(body)
+		return err
+	}
+	if res.BlobID == "" {
+		return fmt.Errorf("topic %d has no metadata blob archived", res.TopicID)
+	}
+	blob, err := archive.LoadBlob(archiveDir, res.BlobID)
+	if err != nil {
+		return err
+	}
+	if blob == nil {
+		return fmt.Errorf("metadata blob %s not found on disk", res.BlobID)
+	}
+	var parsed any
+	if json.Unmarshal(blob, &parsed) == nil {
+		out, _ := json.MarshalIndent(parsed, "", "  ")
+		fmt.Println(string(out))
+		return nil
+	}
+	fmt.Println(string(blob))
+	return nil
+}
+
+var archivePathCmd = &cobra.Command{
+	Use:   "path <ref>",
+	Short: "Print the absolute on-disk path to an archive blob (topicId, metadata uuid, or body sha)",
+	Long: "Auto-detected: numeric topicId, 32-hex metadata uuid, or 64-hex body sha.\n" +
+		"--kind metadata|body forces one kind when the ref is ambiguous.\n\n" +
+		"Examples:\n" +
+		"  cat \"$(schooltools archive path 19448654)\"\n" +
+		"  cp \"$(schooltools archive path c1a8e46b…472b)\" ~/doc.pdf",
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runArchivePath(args[0])
+	},
+}
+
+func runArchivePath(ref string) error {
+	store, err := archive.OpenStore(archiveDir)
+	if err != nil {
+		return err
+	}
+	kind := archivePathKind
+	if kind != "" && (kind != "metadata" && kind != "body") {
+		return fmt.Errorf("unknown --kind %q (want metadata or body)", kind)
+	}
+	res, err := store.Resolve(ref, kind)
+	if err != nil {
+		return err
+	}
+	fmt.Println(res.BlobPath)
+	return nil
+}
+
+var archiveExportCmd = &cobra.Command{
+	Use:   "export [ref...]",
+	Short: "Copy archived file bodies out as CourseCode/Friendly Title.<ext>",
+	Long: "Copy every File topic with an archived body to <out>/<CourseCode>/<title>.<ext>.\n" +
+		"Collisions get a ` (2)`, ` (3)`, … suffix. Pass refs to copy just one\n" +
+		"(`archive export 19448654`). Use --flat to skip the per-course folder.\n" +
+		"Use --dry-run to print the plan without writing files.\n\n" +
+		"Examples:\n" +
+		"  schooltools archive export --out ~/pdfs --course 1522695 --ext pdf\n" +
+		"  schooltools archive export --out ~/pdfs --flat\n" +
+		"  schooltools archive export --out ./all --dry-run\n" +
+		"  schooltools archive export 19448654 --out ./single",
+	Args: cobra.ArbitraryArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runArchiveExport(args)
+	},
+}
+
+func runArchiveExport(refs []string) error {
+	abs, err := filepath.Abs(archiveDir)
+	if err != nil {
+		return err
+	}
+	if archiveExportOut == "" {
+		return fmt.Errorf("export: --out is required")
+	}
+	res, err := archive.Export(archive.ExportOptions{
+		Root:      abs,
+		Out:       archiveExportOut,
+		CourseIDs: archiveCourses,
+		Ext:       archiveExportExt,
+		Flat:      archiveExportFlat,
+		DryRun:    archiveExportDryRun,
+		Refs:      refs,
+	})
+	if err != nil {
+		return err
+	}
+	if archiveJSON {
+		out, _ := json.MarshalIndent(res, "", "  ")
+		fmt.Println(string(out))
+		return nil
+	}
+	if archivePlain {
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, '\t', 0)
+		fmt.Fprintln(w, "topicId\tcourse\tstatus\tsize\tdest")
+		for _, f := range res.Files {
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n",
+				f.TopicID, f.CourseID, f.Status, fmt.Sprintf("%d", f.Size), f.Dest)
+		}
+		return w.Flush()
+	}
+	if len(res.Files) == 0 {
+		fmt.Println("Nothing matched.")
+		return nil
+	}
+	for _, f := range res.Files {
+		status := f.Status
+		switch f.Status {
+		case "copied", "would-copy":
+			fmt.Printf("  %s  %s  %s  %s\n", f.CourseID, status, humanBytes(f.Size), f.Dest)
+		case "skipped-missing-body":
+			fmt.Printf("  %s  SKIP (no body)  topic %d  %s\n", f.CourseID, f.TopicID, f.Title)
+		}
+	}
+	fmt.Printf("\n%s: %d file%s%s, %s total\n",
+		statusLabel(res.DryRun), res.Copied, plural(res.Copied),
+		fmt.Sprintf(", %d skipped", res.Skipped),
+		humanBytes(res.BytesTotal))
+	return nil
+}
+
+func statusLabel(dry bool) string {
+	if dry {
+		return "would copy"
+	}
+	return "copied"
+}
+
+var archivePruneCmd = &cobra.Command{
+	Use:   "prune",
+	Short: "Drop old metadata versions and unreferenced blobs; bodies for unreferenced topics",
+	Long: "Plan-only by default: prints the count of blobs that would be deleted and\n" +
+		"the number of index records that would be trimmed. Pass --delete to apply.\n" +
+		"After pruning, per-course indexes only reference blobs that still exist,\n" +
+		"so `archive show` can never print a dead uuid.\n\n" +
+		"Examples:\n" +
+		"  schooltools archive prune              # plan\n" +
+		"  schooltools archive prune --delete     # apply\n" +
+		"  schooltools archive prune --json       # machine-readable plan",
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runArchivePrune()
+	},
+}
+
+func runArchivePrune() error {
+	abs, err := filepath.Abs(archiveDir)
+	if err != nil {
+		return err
+	}
+	if archivePruneDelete {
+		lock, lerr := acquireLock(abs, archivePruneWait)
+		if lerr != nil {
+			if errors.Is(lerr, archive.ErrAlreadyRunning) {
+				return fmt.Errorf("another run holds the lock at %s; re-run with --wait to block", archive.LockPath(abs))
+			}
+			return fmt.Errorf("acquire archive lock: %w", lerr)
+		}
+		if lock != nil {
+			defer func() { _ = lock.Release() }()
+		}
+		res, err := archive.Prune(abs)
+		if err != nil {
+			return err
+		}
+		return renderPruneResult(abs, res, false)
+	}
+	res, err := archive.PrunePlan(abs)
+	if err != nil {
+		return err
+	}
+	return renderPruneResult(abs, res, true)
+}
+
+func renderPruneResult(root string, res archive.PruneResult, plan bool) error {
+	if archiveJSON {
+		out, _ := json.MarshalIndent(map[string]any{
+			"root":           root,
+			"plan":           plan,
+			"blobsBefore":    res.BlobsBefore,
+			"blobsAfter":     res.BlobsAfter,
+			"wouldDelete":    res.Deleted,
+			"bytesReclaim":   res.BytesReclaim,
+			"orphans":        res.Orphans,
+			"trimmedRecords": res.TrimmedRecords,
+		}, "", "  ")
+		fmt.Println(string(out))
+		return nil
+	}
+	verb := "Would delete"
+	if !plan {
+		verb = "Deleted"
+	}
+	fmt.Printf("Prune at %s\n", root)
+	fmt.Printf("  %s %d blob%s (%s).\n",
+		verb, res.Deleted, plural(res.Deleted), humanBytes(res.BytesReclaim))
+	if res.TrimmedRecords > 0 {
+		fmt.Printf("  %s %d index version record%s (history becomes current-only).\n",
+			verb, res.TrimmedRecords, plural(res.TrimmedRecords))
+	}
+	if plan {
+		fmt.Println("  Re-run with --delete to apply.")
+	}
+	if len(res.Orphans) > 0 {
+		fmt.Println("  Orphan samples:")
+		n := len(res.Orphans)
+		if n > 10 {
+			n = 10
+		}
+		for _, o := range res.Orphans[:n] {
+			fmt.Printf("    - %s\n", o)
+		}
+		if len(res.Orphans) > 10 {
+			fmt.Printf("    …and %d more\n", len(res.Orphans)-10)
+		}
+	}
+	return nil
+}
+
+var archiveVerifyCmd = &cobra.Command{
+	Use:   "verify",
+	Short: "Check archive integrity (pointer resolution, dangling versions, orphan blobs)",
+	Long: "Walks every course's index and confirms that:\n" +
+		"  • every TopicIndex.Current points at an existing .json blob\n" +
+		"  • every CurrentBody points at an existing .bin blob\n" +
+		"  • every Versions / BodyVersions record resolves to a blob on disk\n" +
+		"  • per-course index parses\n" +
+		"  • every global-index course id has a courses/<id>/ directory\n" +
+		"  • orphan blobs are reported (informational; prune clears them)\n\n" +
+		"--deep re-hashes every body blob and compares against its filename.\n\n" +
+		"Exits 0 on success, 1 when issues are found.\n\n" +
+		"Examples:\n" +
+		"  schooltools archive verify\n" +
+		"  schooltools archive verify --deep --json | jq '.issues'",
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runArchiveVerify()
+	},
+}
+
+func runArchiveVerify() error {
+	abs, err := filepath.Abs(archiveDir)
+	if err != nil {
+		return err
+	}
+	res, err := archive.Verify(abs, archiveVerifyDeep)
+	if err != nil {
+		return err
+	}
+	if archiveJSON {
+		out, _ := json.MarshalIndent(res, "", "  ")
+		fmt.Println(string(out))
+		if !res.OK {
+			return errJSONShown
+		}
+		return nil
+	}
+	if res.OK && len(res.Orphans) == 0 {
+		fmt.Printf("OK — checked %d topics, %d blobs at %s\n",
+			res.CheckedTopics, res.CheckedBlobs, abs)
+		return nil
+	}
+	fmt.Printf("Checked %d topics, %d blobs at %s\n",
+		res.CheckedTopics, res.CheckedBlobs, abs)
+	if len(res.Issues) > 0 {
+		fmt.Printf("Issues (%d):\n", len(res.Issues))
+		for _, iss := range res.Issues {
+			line := fmt.Sprintf("  [%s]", iss.Code)
+			if iss.CourseID != "" {
+				line += " course=" + iss.CourseID
+			}
+			if iss.TopicID != 0 {
+				line += fmt.Sprintf(" topic=%d", iss.TopicID)
+			}
+			if iss.Blob != "" {
+				line += " blob=" + iss.Blob
+			}
+			fmt.Println(line)
+			fmt.Printf("      %s\n", iss.Message)
+		}
+	}
+	if len(res.Orphans) > 0 {
+		fmt.Printf("Orphan blobs (%d): use `archive prune --delete` to clear.\n", len(res.Orphans))
+		n := len(res.Orphans)
+		if n > 10 {
+			n = 10
+		}
+		for _, o := range res.Orphans[:n] {
+			fmt.Printf("  - %s\n", o)
+		}
+		if len(res.Orphans) > 10 {
+			fmt.Printf("  …and %d more\n", len(res.Orphans)-10)
+		}
+	}
+	if !res.OK {
+		return fmt.Errorf("verify found %d issue%s", len(res.Issues), plural(len(res.Issues)))
+	}
+	return nil
+}
+
+func acquireLock(abs string, wait bool) (*archive.Lock, error) {
+	if wait {
+		return archive.WaitLock(abs)
+	}
+	return archive.TryLock(abs)
+}
+
+func mergeScope(args, flagCourses []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(args)+len(flagCourses))
+	for _, s := range args {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	for _, s := range flagCourses {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
+func archiveTitle(positional []string, flagCourses []string) string {
+	all := mergeScope(positional, flagCourses)
+	switch len(all) {
+	case 0:
+		return "Archiving all courses"
+	case 1:
+		return fmt.Sprintf("Archiving course %s", all[0])
+	default:
+		return fmt.Sprintf("Archiving %d courses", len(all))
+	}
+}
+
 func progressAdapter(hud *ui.Progress) archive.ProgressFunc {
 	if hud == nil {
 		return nil
@@ -536,80 +1172,39 @@ func progressAdapter(hud *ui.Progress) archive.ProgressFunc {
 	}
 }
 
-// archiveTitle builds the HUD title line based on whether a subset of
-// courses was requested.
-func archiveTitle(args []string) string {
-	if len(args) == 0 {
-		return "Archiving all courses"
+func relTime(t time.Time) string {
+	if t.IsZero() {
+		return "never"
 	}
-	if len(args) == 1 {
-		return fmt.Sprintf("Archiving course %s", args[0])
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", int(d/time.Second))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d/time.Minute))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d/time.Hour))
+	case d < 30*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d/(24*time.Hour)))
+	default:
+		return t.UTC().Format("2006-01-02")
 	}
-	return fmt.Sprintf("Archiving %d courses", len(args))
 }
 
-// runArchiveList prints the saved index without hitting the API. Useful for
-// cronjobs that want to verify a previous archive run completed. The
-// `dir` and `json` values are read from the active subcommand flags so the
-// subcommand form (`archive list`) can override them.
-func runArchiveList() error {
-	// When called as a subcommand the global archiveCmd's --dir/--json are
-	// not set; the archiveListCmd owns its own copies. Prefer those.
-	dir := archiveListDir
-	jsonOut := archiveListJSON
-	if dir == "" {
-		dir = archive.DefaultRoot()
+func humanBytes(n int64) string {
+	const (
+		KiB = 1 << 10
+		MiB = 1 << 20
+		GiB = 1 << 30
+	)
+	switch {
+	case n >= GiB:
+		return fmt.Sprintf("%.2f GiB", float64(n)/GiB)
+	case n >= MiB:
+		return fmt.Sprintf("%.2f MiB", float64(n)/MiB)
+	case n >= KiB:
+		return fmt.Sprintf("%.2f KiB", float64(n)/KiB)
+	default:
+		return fmt.Sprintf("%d B", n)
 	}
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return fmt.Errorf("resolve archive dir: %w", err)
-	}
-	idx, err := archive.LoadIndex(abs)
-	if err != nil {
-		return err
-	}
-	ids := archive.SortedCourseIDs(idx)
-	if len(ids) == 0 {
-		fmt.Printf("No archive at %s yet.\n", abs)
-		return nil
-	}
-
-	if jsonOut {
-		out, _ := json.MarshalIndent(idx, "", "  ")
-		fmt.Println(string(out))
-		return nil
-	}
-
-	fmt.Printf("Archive index at %s (last updated %s)\n", abs, idx.UpdatedAt.Format(time.RFC3339))
-	rows := make([][]string, len(ids))
-	for i, id := range ids {
-		e := idx.Courses[id]
-		stamped := "—"
-		if !e.TocFetchedAt.IsZero() {
-			stamped = e.TocFetchedAt.Format("2006-01-02 15:04")
-		}
-		_, docErr := os.Stat(filepath.Join(abs, "courses", id, "index.json"))
-		docMark := "○"
-		if docErr == nil {
-			docMark = "●"
-		}
-		rows[i] = []string{
-			e.OrgUnitId,
-			activeMark(e.IsActive),
-			e.Code,
-			e.Name,
-			fmt.Sprintf("%d", e.TopicsTotal),
-			fmt.Sprintf("%d", e.TopicsNew),
-			fmt.Sprintf("%d", e.TopicsStale),
-			stamped,
-			docMark,
-		}
-	}
-	out := table.Render(table.Options{
-		Headers: []string{"ID", "Active", "Code", "Name", "Total", "New", "Stale", "TOC Fetched", "Indexed"},
-		Widths:  table.Widths([]table.ColumnSpec{table.Fixed(8), table.Fixed(6), table.Fixed(10), table.Flex(24), table.Fixed(6), table.Fixed(5), table.Fixed(6), table.Fixed(18), table.Fixed(8)}, table.TerminalWidth()),
-		Rows:    rows,
-	})
-	fmt.Print(out)
-	return nil
 }

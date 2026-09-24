@@ -156,6 +156,21 @@ func TokenRefresher() httpclient.TokenRefresher {
 	return httpclient.TokenRefresherFunc(refresh)
 }
 
+// MintTokenFromSavedSession re-uses the persisted session jar to mint a fresh
+// Brightspace OAuth token. Returns a *session.TokenRecord ready to persist
+// via session.SaveToken. No SAML re-login required — this is the public
+// entry point for `schooltools token --refresh` (KNOWN_ISSUES #14).
+func MintTokenFromSavedSession() (*session.TokenRecord, error) {
+	jar, err := session.LoadJar()
+	if err != nil {
+		return nil, fmt.Errorf("refresh: load session jar: %w", err)
+	}
+	if jar == nil {
+		return nil, fmt.Errorf("refresh: no saved session — run `schooltools login` first")
+	}
+	return mintBrightspaceToken(jar)
+}
+
 func refresh(ctx context.Context) (string, error) {
 	jar, err := session.LoadJar()
 	if err != nil {

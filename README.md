@@ -43,7 +43,8 @@ go install .
    schooltools content --course 1527886           # browse the TOC
    schooltools content --course 1527886 get 19278283  # one topic's metadata
    schooltools download --course 1527886 19278283    # download that topic's file
-   schooltools archive                              # snapshot every course
+   schooltools archive update                       # snapshot every course
+   schooltools archive find "safety contract"      # search your archive
    ```
 
 ## Commands (promoted)
@@ -147,57 +148,92 @@ works, prints a deprecation notice, and dispatches to the new form.
 `schooltools archive` snapshots your D2L courses into
 `~/.config/schooltools/archive/` (override with `--dir`). The store is
 **content-addressed by random UUID** and **versioned**: every blob's
-filename is just a 128-bit random hex string, and every topic keeps the
-full history of versions we have ever saved for it.
+filename is a 128-bit random hex string, and every topic keeps the full
+history of versions we have ever saved for it.
 
 ```
 ~/.config/schooltools/archive/
   index.json                      # global manifest: courses + per-course counters
-  blobs/<uuid>.json               # every document blob, flat, named only by UUID
+  blobs/<uuid>.json               # every metadata document, flat, named by UUID
+  blobs/<sha256>.bin              # every file body (PDF/DOCX/…), content-addressed
   courses/<courseId>/
-    index.json                    # per-course: topicId -> { title, lastModified,
-                                  #               current: <uuid>, versions: [...] }
+    index.json                    # per-course: topicId → { title, lastModified,
+                                  #             current: <uuid>, versions: […],
+                                  #             currentBody: <sha256>,
+                                  #             bodyVersions: […] }
 ```
 
-By default the pass covers every course returned by the manageCourses
-API. Pass one or more OrgUnitIds as positional arguments to restrict the
-pass:
+The CLI is organised around jobs, not storage internals. Bare
+`schooltools archive` prints a status summary (counts, freshness,
+missing bodies); the mutating pass is `archive update`.
+
+### Commands
+
+| Command | Job |
+| --- | --- |
+| `archive` | Status (counts, freshness, missing bodies, lock, `try:` hints) |
+| `archive update [courseId...]` | Fetch new/changed + fill missing bodies |
+| `archive update --dry-run` | Plan only — writes nothing |
+| `archive list` | Courses in the store |
+| `archive find [query...]` | Search titles / URLs (`--ext`, `--type`, `--with-bodies`, `--missing-bodies`) |
+| `archive show <ref>` | Topic record + version history |
+| `archive cat <ref>` | Bytes (File) / pretty JSON (else) to stdout |
+| `archive path <ref>` | Absolute on-disk path |
+| `archive export [--out DIR] [--flat] [--dry-run]` | Copy file bodies out as `<CourseCode>/<Title>.<ext>` |
+| `archive prune [--delete]` | Drop old versions; plan only by default |
+| `archive verify [--deep]` | Integrity check (pointers, dangling versions, orphans) |
+
+`<ref>` is auto-detected from a numeric topicId, a 32-hex metadata UUID,
+or a 64-hex body SHA-256. `--kind metadata|body` forces one kind on
+`show`/`cat`/`path`.
+
+### Workflow
 
 ```sh
-schooltools archive                          # archive everything
-schooltools archive 123456                   # archive just one course
-schooltools archive 123456 234567 345678     # archive a specific set
-schooltools archive --diff 123456            # preview without writing
+schooltools archive update                        # snapshot every course
+schooltools archive update 123456                 # one course
+schooltools archive update --course 12345 67890   # two courses (repeatable --course)
+schooltools archive update --dry-run              # preview the plan
+schooltools archive find "safety contract"        # search
+schooltools archive cat 19448654 > contract.pdf   # one file out
+schooltools archive export --out ~/pdfs --ext pdf # many files out
+schooltools archive prune --delete                # reclaim disk
+schooltools archive verify                        # integrity check
 ```
 
-Each pass is incremental and **append-only** at the blob layer: topics
-whose `LastModifiedDate` has not moved are skipped; new or modified
-topics get a brand-new blob under `blobs/<uuid>.json`. The old blob is
-left on disk untouched and the topic's `versions` history grows. **Nothing
-is ever overwritten or deleted by `archive`.**
+### Convergence and idempotence
 
-`schooltools archive list` shows the saved index without making any API
-requests. Flags: `--dir`, `--json`.
+Each pass is incremental and **append-only** at the blob layer:
+topics whose `LastModifiedDate` has not moved are skipped; new or
+modified topics get a brand-new blob under `blobs/<uuid>.json`. The
+old blob is left on disk untouched and the topic's `versions` history
+grows. `update` converges: it also fills in any File topic whose
+body is missing on disk (whether because the first attempt errored,
+or because the body was deleted by a future prune that didn't yet
+run), so the archive converges to "every File topic has a body" after
+each pass.
+
+The `archive` blob store is **never** modified or deleted by `update`.
+Reclamation happens via `archive prune --delete`.
 
 ## Prune
 
-`schooltools prune` walks every `courses/<id>/index.json`, builds the
-set of "live" UUIDs (the union of every topic's `current` pointer), and
-deletes every other file in `blobs/`. Old versions and unreferenced
-blobs go away; each topic's latest document stays exactly where
-`archive` left it. The per-course index is **not** modified — it still
-records the full version history, even after the blobs have been
-reclaimed.
+`schooltools archive prune` walks every `courses/<id>/index.json`,
+builds the set of "live" blobs (every topic's current metadata UUID
+**and** current body SHA), and deletes every other file in `blobs/`.
+After pruning, per-course indexes are rewritten in the same pass so
+no `Versions` / `BodyVersions` record points at a deleted blob.
 
 ```sh
-schooltools prune                # delete old versions
-schooltools prune --dry-run      # report what would be deleted
-schooltools prune --json         # machine-readable summary
-schooltools prune --dir /other   # prune a non-default archive root
+schooltools archive prune              # plan only — reports what would be deleted
+schooltools archive prune --delete     # apply
+schooltools archive prune --json       # machine-readable plan
+schooltools archive prune --dir /other # prune a non-default archive root
 ```
 
-Typical use: run `archive` on a schedule (e.g. nightly via cron), and
-run `prune` after a longer interval (e.g. weekly) to reclaim disk.
+`prune` is plan-only by default — destructive commands print a plan
+first; applying is an explicit `--delete`. Use `archive prune --wait`
+when you need to wait on the lock instead of failing.
 
 ## Advanced / rarely used
 
@@ -257,12 +293,19 @@ changes:
 | `schooltools content 1527886` | `schooltools content --course 1527886` |
 | `schooltools download 1527886/topics/19278283` | `schooltools download --course 1527886 19278283` |
 | `schooltools archive --list` | `schooltools archive list` |
+| `schooltools archive --diff <id>` | `schooltools archive update --dry-run [--course <id>]` |
+| `schooltools archive` (bare) | `schooltools archive` (now status) or `schooltools archive update` (fetch) |
+| `schooltools archive files --ext pdf` | `schooltools archive find --type File --ext pdf` |
+| `schooltools archive read <topicId>` | `schooltools archive cat <topicId>` (pass `--meta` to force the metadata blob) |
+| `schooltools archive body <sha>` | `schooltools archive cat <sha>` |
+| `schooltools prune --dry-run` | `schooltools archive prune` (plan only) |
+| `schooltools prune --delete` | `schooltools archive prune --delete` |
 | `schooltools courses` / `courses --json` / `courses --all` | `schooltools course list [--json] [--all] [--limit N]` |
 
 The legacy positional forms of `content` and `download` still work, print
 a one-line deprecation notice, and dispatch to the new form. They are
 hidden from `schooltools --help` and will be removed in a future release.
-Everything else (`prune`, `login`, `logout`, `whoami`, `doctor`,
+Everything else (`login`, `logout`, `whoami`, `doctor`,
 `session`, `session ttl`, `auth log`, `systemd`, `token`) is unchanged.
 
 ### Earlier (TypeScript → Go)

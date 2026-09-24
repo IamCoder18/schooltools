@@ -23,6 +23,12 @@ type Options struct {
 	ShowDate bool
 	// ShowFlags appends a bracketed list of [hidden] [locked] [broken].
 	ShowFlags bool
+	// TopicLabelHook is consulted only for topics (not modules). When it
+	// returns a non-empty string it is appended inside the type brackets,
+	// e.g. "[File.pdf]" instead of "[File]". Lets the tree viewer show
+	// file extensions for File-type topics without coupling this package
+	// to the URL/extension parsing.
+	TopicLabelHook func(content.TocTopic) string
 }
 
 // RenderTOC walks modules → topics → nested modules (matching
@@ -146,7 +152,13 @@ func labelForTopic(t content.TocTopic, opts Options) string {
 	}
 	parts = append(parts, t.Title)
 	if opts.ShowType {
-		parts = append(parts, "["+topicType(t)+"]")
+		typeLabel := topicType(t)
+		if opts.TopicLabelHook != nil {
+			if extra := opts.TopicLabelHook(t); extra != "" {
+				typeLabel = typeLabel + "." + extra
+			}
+		}
+		parts = append(parts, "["+typeLabel+"]")
 	}
 	if opts.ShowDate && t.LastModifiedDate != "" {
 		parts = append(parts, "["+shortDate(t.LastModifiedDate)+"]")

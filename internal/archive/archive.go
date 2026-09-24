@@ -68,7 +68,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http/cookiejar"
@@ -88,8 +87,10 @@ import (
 const (
 	// SchemaVersion is bumped when the on-disk layout changes in a way that
 	// would confuse older readers. v3 added bodies (blobs/<sha256>.bin) and
-	// per-topic body-version tracking.
-	SchemaVersion = 3
+	// per-topic body-version tracking. v4 makes prune trim version/
+	// body-version records that point at removed blobs (history becomes
+	// current-only after a prune) so no index entry can dangle.
+	SchemaVersion = 4
 	// indexFileName is the global manifest.
 	indexFileName = "index.json"
 	// blobsDirName holds every document blob, named only by UUID.
@@ -212,48 +213,40 @@ type CourseIndex struct {
 
 // Result summarises one archive pass for human display.
 type Result struct {
-	Root            string
-	CoursesScanned  int
-	CoursesSkipped  int
-	TopicsChecked   int
-	TopicsFetched   int
-	TopicsStale     int
-	BodiesFetched   int // File topics whose body blob was newly saved (SHA changed or first-ever)
-	BodiesReused    int // File topics whose body matched the saved hash — copy skipped
-	BodiesFailed    int // File topics whose body download errored (metadata still saved)
+	Root           string
+	CoursesScanned int
+	CoursesSkipped int
+	TopicsChecked  int
+	TopicsFetched  int
+	TopicsStale    int
+	BodiesFetched  int // File topics whose body blob was newly saved (SHA changed or first-ever)
+	BodiesReused   int // File topics whose body matched the saved hash — copy skipped
+	BodiesFailed   int // File topics whose body download errored (metadata still saved)
 }
 
 // DiffResult is the structured output of a Diff pass — what would a Run
-// pass do, without actually fetching any topic bodies or writing any state.
+// pass do, without writing any state.
 type DiffResult struct {
-	Root            string
-	CoursesScanned  int
-	TopicsChecked   int
+	Root             string
+	CoursesScanned   int
+	TopicsChecked    int
 	TopicsWouldFetch int
-	TopicsStale     int
-	PerCourse       []CourseDiff
+	TopicsStale      int
+	BodiesWouldFetch int
+	PerCourse        []CourseDiff
 }
 
 // CourseDiff summarises a single course's planned work.
 type CourseDiff struct {
-	CourseID        string
-	CourseName      string
-	CourseCode      string
-	TopicsTotal     int
-	TopicsNew       int
-	TopicsModified  int
-	TopicsUnchanged int
-	WouldFetchIDs   []int
-}
-
-// PruneResult summarises a Prune pass.
-type PruneResult struct {
-	Root         string
-	BlobsBefore  int
-	BlobsAfter   int
-	Deleted      int
-	BytesReclaim int64
-	OrphanUUIDs  []string // blobs not referenced by any course index
+	CourseID         string
+	CourseName       string
+	CourseCode       string
+	TopicsTotal      int
+	TopicsNew        int
+	TopicsModified   int
+	TopicsUnchanged  int
+	BodiesWouldFetch int
+	WouldFetchIDs    []int
 }
 
 // ProgressFunc lets Run stream activity updates to a UI without coupling to
@@ -263,12 +256,12 @@ type ProgressFunc func(event ProgressEvent)
 
 // ProgressEvent describes a single tick of activity from Run.
 type ProgressEvent struct {
-	Phase                                  string
-	CourseID, CourseName                   string
-	TopicID                                int
-	Reason                                 string
-	Checked, Fetched, Stale                int
-	Done, Total                            int
+	Phase                   string
+	CourseID, CourseName    string
+	TopicID                 int
+	Reason                  string
+	Checked, Fetched, Stale int
+	Done, Total             int
 }
 
 // Options bundles inputs to Run.
@@ -281,7 +274,7 @@ type Options struct {
 	Progress      ProgressFunc   // optional; receives ProgressEvents
 	CourseIDs     []string       // when non-empty, restrict to these course ids
 	Now           func() time.Time
-	DownloadFiles bool           // when true, also download each File topic's underlying bytes and hash-store them in blobs/<sha256>.bin (default: false for backwards-compat)
+	DownloadFiles bool // when true, also download each File topic's underlying bytes and hash-store them in blobs/<sha256>.bin (default: false for backwards-compat)
 }
 
 // baseURL returns the effective D2L base, defaulting to ua.D2LBase.
@@ -491,95 +484,6 @@ func NewUUID() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-// ---- Prune -----------------------------------------------------------------
-
-// Prune deletes every blob that is not the "current" version of some topic
-// in any per-course index. The current UUIDs are collected by walking
-// courses/<id>/index.json under root; every other file in blobs/ is removed.
-//
-// Prune never touches a per-course index file or any blob that is still
-// referenced. If a blob is not referenced by any index but its name happens
-// to collide with an actively-referenced UUID it is preserved (current set
-// is authoritative).
-func Prune(root string) (PruneResult, error) {
-	res := PruneResult{Root: root}
-	if _, err := os.Stat(filepath.Join(root, blobsDirName)); err != nil {
-		if os.IsNotExist(err) {
-			return res, nil
-		}
-		return res, err
-	}
-
-	live, err := collectLiveUUIDs(root)
-	if err != nil {
-		return res, err
-	}
-
-	entries, err := os.ReadDir(filepath.Join(root, blobsDirName))
-	if err != nil {
-		return res, fmt.Errorf("archive: read blobs dir: %w", err)
-	}
-	res.BlobsBefore = len(entries)
-
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		uuid := strings.TrimSuffix(name, blobExt)
-		if _, kept := live[uuid]; kept {
-			continue
-		}
-		path := filepath.Join(root, blobsDirName, name)
-		info, _ := e.Info()
-		if err := os.Remove(path); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return res, fmt.Errorf("archive: prune %s: %w", name, err)
-		}
-		res.Deleted++
-		if info != nil {
-			res.BytesReclaim += info.Size()
-		}
-		res.OrphanUUIDs = append(res.OrphanUUIDs, uuid)
-	}
-	res.BlobsAfter = res.BlobsBefore - res.Deleted
-	return res, nil
-}
-
-// collectLiveUUIDs walks every courses/<id>/index.json under root and
-// returns the set of UUIDs currently pointed at by any TopicIndex.Current.
-// Historical Version entries are intentionally NOT included — the whole
-// point of Prune is to drop old versions, leaving only the current blob.
-func collectLiveUUIDs(root string) (map[string]struct{}, error) {
-	live := map[string]struct{}{}
-	dir := filepath.Join(root, coursesDirName)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return live, nil
-		}
-		return nil, err
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		ci, err := LoadCourseIndex(root, e.Name())
-		if err != nil {
-			return nil, err
-		}
-		for _, t := range ci.Topics {
-			if t.Current == "" {
-				continue
-			}
-			live[t.Current] = struct{}{}
-		}
-	}
-	return live, nil
-}
-
 // ---- Run -------------------------------------------------------------------
 
 // Run executes a full archive pass: list courses (unless CourseIDs is set),
@@ -676,6 +580,11 @@ func Run(opts Options) (Result, error) {
 		result.BodiesReused += stale.bodiesReused
 		result.BodiesFailed += stale.bodiesErr
 
+		entry.TopicsTotal = stale.checked
+		entry.TopicsNew = stale.fetched
+		entry.TopicsStale = stale.stale
+		entry.TocFetchedAt = now()
+
 		emit(opts.Progress, ProgressEvent{
 			Phase:      "course-done",
 			CourseID:   c.OrgUnitId,
@@ -702,14 +611,19 @@ func Run(opts Options) (Result, error) {
 }
 
 // Diff walks the same course list as Run, fetches each TOC, and reports which
-// topics would be fetched — but never fetches topic bodies and never writes
-// to disk. Safe to run repeatedly.
+// topics would be fetched — including file bodies that would be downloaded to
+// fill holes left by the body-convergence gate. Diff never writes to disk
+// (no index updates, no directory creation); the preview is purely in-memory.
+// TOC timestamps only land in the global index after a real update pass.
 func Diff(opts Options) (DiffResult, error) {
-	if opts.Now == nil {
-		opts.Now = time.Now
+	if opts.Root == "" {
+		opts.Root = DefaultRoot()
 	}
-	result := DiffResult{Root: opts.Root}
+	if opts.Jar == nil {
+		return DiffResult{}, fmt.Errorf("archive: nil cookie jar")
+	}
 
+	result := DiffResult{Root: opts.Root}
 	idx, err := LoadIndex(opts.Root)
 	if err != nil {
 		return result, err
@@ -761,6 +675,7 @@ func Diff(opts Options) (DiffResult, error) {
 		result.TopicsChecked += cd.TopicsTotal
 		result.TopicsWouldFetch += cd.TopicsNew + cd.TopicsModified
 		result.TopicsStale += cd.TopicsUnchanged
+		result.BodiesWouldFetch += cd.BodiesWouldFetch
 		result.PerCourse = append(result.PerCourse, cd)
 
 		emit(opts.Progress, ProgressEvent{
@@ -775,8 +690,9 @@ func Diff(opts Options) (DiffResult, error) {
 		})
 
 		if opts.Verbose {
-			fmt.Fprintf(os.Stderr, "[diff] %s (%s): %d topics, %d would fetch, %d unchanged\n",
-				c.OrgUnitId, c.Code, cd.TopicsTotal, cd.TopicsNew+cd.TopicsModified, cd.TopicsUnchanged)
+			fmt.Fprintf(os.Stderr, "[diff] %s (%s): %d topics, %d would fetch, %d body fills, %d unchanged\n",
+				c.OrgUnitId, c.Code, cd.TopicsTotal, cd.TopicsNew+cd.TopicsModified,
+				cd.BodiesWouldFetch, cd.TopicsUnchanged)
 		}
 	}
 	return result, nil
@@ -803,15 +719,29 @@ func diffCourse(opts Options, c Course) (CourseDiff, error) {
 		cd.TopicsTotal++
 		newMod := parseD2LTime(t.LastModifiedDate)
 		ti, existed := ci.Topics[t.TopicId]
+		isFile := topicType(t) == "File" && t.Url != nil && *t.Url != ""
 		switch {
 		case !existed:
 			cd.TopicsNew++
 			cd.WouldFetchIDs = append(cd.WouldFetchIDs, t.TopicId)
+			if isFile {
+				cd.BodiesWouldFetch++
+			}
 		case !ti.LastModified.Equal(newMod):
 			cd.TopicsModified++
 			cd.WouldFetchIDs = append(cd.WouldFetchIDs, t.TopicId)
+			if isFile {
+				cd.BodiesWouldFetch++
+			}
 		default:
 			cd.TopicsUnchanged++
+			if isFile && opts.DownloadFiles && ti != nil {
+				if ti.CurrentBody == "" {
+					cd.BodiesWouldFetch++
+				} else if !fileExists(BodyPath(opts.Root, ti.CurrentBody)) {
+					cd.BodiesWouldFetch++
+				}
+			}
 		}
 	}
 	return cd, nil
@@ -825,7 +755,7 @@ func diffCourse(opts Options, c Course) (CourseDiff, error) {
 // when DownloadFiles is true — otherwise all three stay zero and the
 // summary line simply omits the bodies section.
 type courseStats struct {
-	stale, checked, fetched           int
+	stale, checked, fetched            int
 	bodiesNew, bodiesReused, bodiesErr int
 }
 
@@ -853,31 +783,18 @@ func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats,
 	ci.IsActive = c.IsActive
 
 	type queued struct {
-		topicID  int
-		topic    content.TocTopic
-		reason   string
-		newMod   time.Time
-		isFile   bool // File topic — eligible for body download when --files is on
+		topicID int
+		topic   content.TocTopic
+		reason  string
+		newMod  time.Time
+		isFile  bool
 	}
 	var work []queued
 	for _, t := range flattenTopics(toc.Modules) {
 		s.checked++
 		newMod := parseD2LTime(t.LastModifiedDate)
 		ti, existed := ci.Topics[t.TopicId]
-		// File topics are eligible for body download: anything that the
-		// D2L TOC calls "File" (and has a real URL to the underlying
-		// document) gets its bytes downloaded + hashed in the body-
-		// download stage below. We piggyback on topicType() — the
-		// existing discriminator that maps the TOC's TypeIdentifier /
-		// TopicType fields to the canonical "File" / "Link" /
-		// <empty-other> strings.
 		isFile := topicType(t) == "File" && t.Url != nil && *t.Url != ""
-		// Body-version detection requires re-downloading the file (D2L
-		// doesn't expose a body hash), so we only run the body stage
-		// on topics whose metadata changed. The trade-off: an editor
-		// that re-uploads a file without touching LastModifiedDate
-		// will not be detected. Users who want exhaustive coverage
-		// can `prune` and re-archive.
 		switch {
 		case !existed:
 			work = append(work, queued{topicID: t.TopicId, topic: t, reason: "new", newMod: newMod, isFile: isFile})
@@ -885,10 +802,13 @@ func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats,
 			work = append(work, queued{topicID: t.TopicId, topic: t, reason: "modified", newMod: newMod, isFile: isFile})
 		default:
 			s.stale++
+			if isFile && opts.DownloadFiles && bodyNeeded(opts.Root, ti) {
+				work = append(work, queued{topicID: t.TopicId, topic: t, reason: "body-missing", newMod: newMod, isFile: true})
+			}
 		}
 	}
 
-for _, q := range work {
+	for _, q := range work {
 		if opts.Verbose {
 			fmt.Fprintf(os.Stderr, "[archive]   topic %d: %s\n", q.topicID, q.reason)
 		}
@@ -929,20 +849,21 @@ for _, q := range work {
 			s.fetched++
 		}
 
-		// File bodies: download when this topic was queued as new/modified.
-		// We do NOT re-download bodies when only the existing index has a
-		// matching SHA — that would force a 246-topic walk every run.
-		if !opts.DownloadFiles || !q.isFile || (q.reason != "new" && q.reason != "modified") {
+		if !opts.DownloadFiles || !q.isFile {
 			continue
 		}
 		ti, tiOk := ci.Topics[q.topicID]
 		if !tiOk || ti == nil {
 			continue
 		}
-		if ti.URL == "" {
+		bodyURL := ti.URL
+		if bodyURL == "" {
+			bodyURL = topicURL(q.topic)
+		}
+		if bodyURL == "" {
 			continue
 		}
-		bodyBytes, contentType, berr := downloadFileBody(opts.Jar, ti.URL)
+		bodyBytes, contentType, berr := downloadFileBody(opts.Jar, bodyURL, opts.baseURL())
 		if berr != nil {
 			if opts.Verbose {
 				fmt.Fprintf(os.Stderr, "[archive]   body %d: %v (continuing)\n", q.topicID, berr)
@@ -952,12 +873,15 @@ for _, q := range work {
 		}
 		sha := sha256.Sum256(bodyBytes)
 		shaHex := hex.EncodeToString(sha[:])
-		if shaHex == ti.CurrentBody {
+		// Re-save when the queued reason was "body-missing" (the existing
+		// pointer is gone from disk even if the new SHA matches), so the
+		// archive stays converged. Otherwise an unchanged SHA means we can
+		// skip the write.
+		if q.reason != "body-missing" && ti.CurrentBody != "" && shaHex == ti.CurrentBody {
 			s.bodiesReused++
 			continue
 		}
-		var _, _, sErr = SaveFileBody(opts.Root, bodyBytes)
-		if sErr != nil {
+		if _, _, sErr := SaveFileBody(opts.Root, bodyBytes); sErr != nil {
 			if opts.Verbose {
 				fmt.Fprintf(os.Stderr, "[archive]   body %d save: %v (continuing)\n", q.topicID, sErr)
 			}
@@ -983,25 +907,35 @@ for _, q := range work {
 
 	return s, nil
 }
+func bodyNeeded(root string, ti *TopicIndex) bool {
+	if ti == nil {
+		return false
+	}
+	if ti.CurrentBody == "" {
+		return true
+	}
+	return !fileExists(BodyPath(root, ti.CurrentBody))
+}
 
 // downloadFileBody fetches the underlying file bytes from a Topic URL
 // (e.g. /content/enforced/<org>-<slug>/<file>). Relative URLs are
-// resolved against ua.D2LBase (the public D2L base URL is fine — the
-// session cookie auth applies to the same host).
+// resolved against opts.baseURL() (defaults to ua.D2LBase); absolute
+// URLs are used as-is. The session cookie auth applies to the same host.
 //
 // Returns the bytes and the D2L-provided Content-Type header (empty
 // when missing). The returned body is *not* hashed — call sites
 // should use the SHA they computed to decide whether to save it as a
 // new blob.
-func downloadFileBody(jar *cookiejar.Jar, rawURL string) ([]byte, string, error) {
+func downloadFileBody(jar *cookiejar.Jar, rawURL, base string) ([]byte, string, error) {
 	if rawURL == "" {
 		return nil, "", fmt.Errorf("empty URL")
 	}
-	// Resolve relative URLs against the D2L base. The metadata
-	// endpoint returns bare paths like "/content/enforced/..." which
-	// D2L never gives us as absolute URLs to copy.
 	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
-		base, err := url.Parse(ua.D2LBase)
+		b := base
+		if b == "" {
+			b = ua.D2LBase
+		}
+		parsed, err := url.Parse(b)
 		if err != nil {
 			return nil, "", fmt.Errorf("resolve base: %w", err)
 		}
@@ -1009,7 +943,7 @@ func downloadFileBody(jar *cookiejar.Jar, rawURL string) ([]byte, string, error)
 		if err != nil {
 			return nil, "", fmt.Errorf("parse %s: %w", rawURL, err)
 		}
-		rawURL = base.ResolveReference(rel).String()
+		rawURL = parsed.ResolveReference(rel).String()
 	}
 	res, err := httpclient.FollowRedirects(rawURL, jar, httpclient.FetchOptions{
 		Headers: map[string]string{"Accept": "*/*"},
@@ -1129,6 +1063,94 @@ func safeID(id string) string {
 	}
 	r := strings.NewReplacer("/", "_", "\\", "_", "..", "_")
 	return r.Replace(id)
+}
+
+// FindTopicID locates a single topic by id across every per-course index
+// under root. Returns the course id, the TopicIndex, and ok=true on hit.
+// Topic IDs are globally unique within an archive, so we stop at the first
+// match.
+func FindTopicID(root string, topicID int) (string, *TopicIndex, bool, error) {
+	idx, err := LoadIndex(root)
+	if err != nil {
+		return "", nil, false, err
+	}
+	for cid := range idx.Courses {
+		ci, err := LoadCourseIndex(root, cid)
+		if err != nil {
+			return "", nil, false, err
+		}
+		if t, ok := ci.Topics[topicID]; ok && t != nil {
+			return cid, t, true, nil
+		}
+	}
+	return "", nil, false, nil
+}
+
+// FileTopic is one archived File topic across the archive, with enough
+// metadata for callers that want to enumerate PDFs/DOCXs/etc. without
+// drilling into each course.
+type FileTopic struct {
+	CourseID     string    `json:"courseId"`
+	CourseName   string    `json:"courseName,omitempty"`
+	CourseCode   string    `json:"courseCode,omitempty"`
+	TopicID      int       `json:"topicId"`
+	Title        string    `json:"title,omitempty"`
+	URL          string    `json:"url,omitempty"`
+	Type         string    `json:"type,omitempty"`
+	LastModified time.Time `json:"lastModified,omitempty"`
+	CurrentBody  string    `json:"currentBody,omitempty"`
+	HasBody      bool      `json:"hasBody"`
+}
+
+// FileTopics walks every per-course index and returns one FileTopic per
+// File-type topic. Ext is matched against the URL's extension (lowercase,
+// without the dot); empty string matches everything.
+func FileTopics(root, ext string) ([]FileTopic, error) {
+	idx, err := LoadIndex(root)
+	if err != nil {
+		return nil, err
+	}
+	want := strings.ToLower(strings.TrimPrefix(ext, "."))
+	var out []FileTopic
+	for _, cid := range SortedCourseIDs(idx) {
+		ci, err := LoadCourseIndex(root, cid)
+		if err != nil {
+			return nil, err
+		}
+		for id, t := range ci.Topics {
+			if t == nil {
+				continue
+			}
+			if t.Type != "" && t.Type != "File" {
+				continue
+			}
+			if want != "" {
+				got := strings.ToLower(strings.TrimPrefix(filepath.Ext(t.URL), "."))
+				if got != want {
+					continue
+				}
+			}
+			out = append(out, FileTopic{
+				CourseID:     ci.CourseID,
+				CourseName:   ci.Name,
+				CourseCode:   ci.Code,
+				TopicID:      id,
+				Title:        t.Title,
+				URL:          t.URL,
+				Type:         t.Type,
+				LastModified: t.LastModified,
+				CurrentBody:  t.CurrentBody,
+				HasBody:      t.CurrentBody != "",
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CourseID != out[j].CourseID {
+			return out[i].CourseID < out[j].CourseID
+		}
+		return out[i].TopicID < out[j].TopicID
+	})
+	return out, nil
 }
 
 // SortedCourseIDs returns the course IDs from an Index in stable order, for

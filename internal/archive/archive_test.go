@@ -424,12 +424,13 @@ func TestPruneKeepsLiveAcrossCourses(t *testing.T) {
 // ---- end-to-end with stubbed HTTP -----------------------------------------
 
 type fakeD2L struct {
-	t          *testing.T
-	courses    []d2lCourse
-	tocs       map[string]content.TocResponse
-	topics     map[int]map[string]any
-	tocCalls   int
-	topicCalls map[int]int
+	t           *testing.T
+	courses     []d2lCourse
+	tocs        map[string]content.TocResponse
+	topics      map[int]map[string]any
+	tocCalls    int
+	topicCalls  map[int]int
+	bodyHandler http.HandlerFunc // optional; serves file bodies on arbitrary paths
 }
 
 func newFakeD2L(t *testing.T) *fakeD2L {
@@ -498,6 +499,11 @@ func (f *fakeD2L) handler() http.Handler {
 			http.NotFound(w, r)
 		}
 	})
+	// Fallback for arbitrary paths (e.g. file bodies) — when the test set
+	// bodyHandler, route everything else through it.
+	if f.bodyHandler != nil {
+		mux.Handle("/", f.bodyHandler)
+	}
 	return mux
 }
 

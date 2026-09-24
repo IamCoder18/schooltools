@@ -29,6 +29,12 @@ func LockPath(root string) string {
 	return filepath.Join(root, "archive.lock")
 }
 
+// WaitLock blocks until the archive lock can be acquired. Used by --wait.
+// Returns the lock or an I/O error (never ErrAlreadyRunning).
+func WaitLock(root string) (*Lock, error) {
+	return lockWith(root, false)
+}
+
 // TryLock attempts to claim the archive lock. Returns:
 //   - (*Lock, nil) on success — caller MUST defer Release
 //   - (nil, ErrAlreadyRunning) when another live process holds it
@@ -36,6 +42,10 @@ func LockPath(root string) string {
 //
 // Stale locks (file exists but PID is dead) are silently claimed.
 func TryLock(root string) (*Lock, error) {
+	return lockWith(root, true)
+}
+
+func lockWith(root string, nonblock bool) (*Lock, error) {
 	path := LockPath(root)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
@@ -44,16 +54,17 @@ func TryLock(root string) (*Lock, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	flags := syscall.LOCK_EX
+	if nonblock {
+		flags |= syscall.LOCK_NB
+	}
+	if err := syscall.Flock(int(f.Fd()), flags); err != nil {
 		_ = f.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
+		if nonblock && errors.Is(err, syscall.EWOULDBLOCK) {
 			return nil, ErrAlreadyRunning
 		}
 		return nil, err
 	}
-	// Truncate + write our PID. Reading and re-checking the previous PID
-	// before truncating gives us "stale lock detection" for the case where
-	// the previous process crashed without releasing the flock.
 	if _, err := f.Seek(0, 0); err != nil {
 		_ = f.Close()
 		return nil, err

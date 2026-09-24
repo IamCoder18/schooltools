@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 
@@ -23,19 +25,35 @@ var rootCmd = &cobra.Command{
 func init() {
 	rootCmd.SetVersionTemplate("schooltools version {{.Version}}\n")
 	rootCmd.SilenceUsage = true
+	rootCmd.SilenceErrors = true
 	rootCmd.PersistentFlags().BoolVar(&noAuthLog, "no-auth-log", false, "Disable the JSONL auth log (~/.config/schooltools/auth.log)")
 	cobra.OnInitialize(func() {
-		// Wire the Bearer-token auto-refresh path: any 401 from a Brightspace
-		// API call re-mints via /d2l/lp/auth/oauth2/token using the saved LMS
-		// session cookies (no full SAML re-login) as long as those cookies
-		// are still valid.
 		httpclient.RegisterTokenRefresher(login.TokenRefresher())
 	})
 }
 
+var errJSONShown = errors.New("error shown in JSON envelope")
+
+type jsonError struct{ Err error }
+
+func (e *jsonError) Error() string { return e.Err.Error() }
+func (e *jsonError) Unwrap() error { return e.Err }
+
+func showJSONError(err error) error {
+	if err == nil {
+		return nil
+	}
+	out, _ := json.Marshal(map[string]any{"error": err.Error()})
+	fmt.Println(string(out))
+	return &jsonError{Err: err}
+}
+
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		var je *jsonError
+		if !errors.As(err, &je) {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		os.Exit(1)
 	}
 }

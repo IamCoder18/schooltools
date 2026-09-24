@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"net/http/cookiejar"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -39,12 +40,58 @@ var doctorCmd = &cobra.Command{
 		// Validity.
 		records, _ := session.Load()
 		valid := session.HasValidSession(records)
+		ex, exErr := session.SessionExpiry()
+		tokenRec, _ := session.LoadToken()
+		now := time.Now()
+
+		samlStatus := "no saml-last.json"
+		samlExpired := false
+		if exErr == nil && ex.SAMLAvailable {
+			if ex.SAMLNotAfter.After(now) {
+				samlStatus = "valid for " + humanize(ex.SAMLNotAfter.Sub(now))
+			} else {
+				samlStatus = fmt.Sprintf("EXPIRED at %s", ex.SAMLNotAfter.UTC().Format(time.RFC3339))
+				samlExpired = true
+			}
+		}
+		tokenStatus := "no token.json"
+		tokenExpired := false
+		if tokenRec != nil {
+			if tokenRec.IsExpired(now) {
+				tokenStatus = fmt.Sprintf("EXPIRED at %s", tokenRec.ExpiresAt.UTC().Format(time.RFC3339))
+				tokenExpired = true
+			} else if tokenRec.ExpiresAt.IsZero() {
+				tokenStatus = "no expiry"
+			} else {
+				tokenStatus = "valid for " + humanize(tokenRec.Remaining(now))
+			}
+		}
+		warnings := 0
+		validityRow := []string{"hasValidSession()", boolResult(valid, "valid", "invalid")}
+		if !valid {
+			warnings++
+		}
+		if samlExpired {
+			warnings++
+			validityRow = append(validityRow, "SAML assertion: re-login required (run `schooltools login`)")
+		}
+		if tokenExpired {
+			warnings++
+			if tokenRec != nil && tokenRec.RefreshToken != "" {
+				validityRow = append(validityRow, "Brightspace token: try `schooltools token --refresh`, otherwise re-login")
+			} else {
+				validityRow = append(validityRow, "Brightspace token: re-login required (run `schooltools login`)")
+			}
+		}
 		fmt.Println("\nValidity")
 		fmt.Print(table.Render(table.Options{
-			Headers: []string{"Check", "Result"},
-			Widths:  table.Widths([]table.ColumnSpec{table.Fixed(22), table.Flex(14)}, tw),
-			Rows:    [][]string{{"hasValidSession()", boolResult(valid, "valid", "invalid")}},
+			Headers: []string{"Check", "Result", "Notes"},
+			Widths:  table.Widths([]table.ColumnSpec{table.Fixed(22), table.Flex(14), table.Flex(32)}, tw),
+			Rows:    [][]string{validityRow, {"SAML window", samlStatus, "—"}, {"Brightspace token", tokenStatus, "—"}},
 		}))
+		if warnings > 0 {
+			fmt.Printf("\n%d warning%s — see above.\n", warnings, plural(warnings))
+		}
 
 		// Probes.
 		probeRows := [][]string{}

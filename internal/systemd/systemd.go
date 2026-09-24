@@ -26,7 +26,7 @@ const (
 )
 
 // InstallOptions configures an install run. ExecStart is the full ExecStart
-// line written into the service unit (typically "/usr/bin/schooltools archive"
+// line written into the service unit (typically "/usr/bin/schooltools archive update"
 // or the resolved path of the current binary).
 type InstallOptions struct {
 	// ExecStart is the command line to run. If empty, Install tries to
@@ -57,8 +57,9 @@ type Status struct {
 
 // renderExecStart returns the ExecStart string to bake into the service unit.
 // Prefers the caller's override; falls back to the absolute path of the
-// currently running binary followed by ` archive`. Returns a non-empty warning
-// when the resolved path is in a volatile location like /tmp.
+// currently running binary followed by ` archive update --no-auto-refresh`.
+// Returns a non-empty warning when the resolved path is in a volatile
+// location like /tmp.
 func renderExecStart(override string) (string, []string, error) {
 	if strings.TrimSpace(override) != "" {
 		return override, nil, nil
@@ -77,7 +78,7 @@ func renderExecStart(override string) (string, []string, error) {
 			fmt.Sprintf("binary lives at %s which may not survive reboot — "+
 				"install to /usr/local/bin or ~/.local/bin for a stable unit", abs))
 	}
-	return abs + " archive", warnings, nil
+	return abs + " archive update --no-auto-refresh", warnings, nil
 }
 
 // isVolatilePath returns true for paths that are cleaned on reboot or have
