@@ -1,6 +1,7 @@
 package content
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -131,9 +132,17 @@ func TopicURL(orgUnitID string, topicID int) string {
 }
 
 // FetchToc fetches the TOC JSON for a course using the given cookie jar.
+// The supplied context cancels the in-flight HTTP request when it expires.
 func FetchToc(orgUnitID string, jar *cookiejar.Jar) (TocResponse, error) {
+	return FetchTocWithContext(context.Background(), orgUnitID, jar)
+}
+
+// FetchTocWithContext is FetchToc with a caller-supplied context. Pass
+// context.Background() for the no-deadline behaviour.
+func FetchTocWithContext(ctx context.Context, orgUnitID string, jar *cookiejar.Jar) (TocResponse, error) {
 	res, err := httpclient.FollowRedirects(TocURL(orgUnitID), jar, httpclient.FetchOptions{
 		Headers: map[string]string{"Accept": "application/json"},
+		Context: ctx,
 	})
 	if err != nil {
 		return TocResponse{}, err

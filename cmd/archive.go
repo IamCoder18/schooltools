@@ -714,7 +714,8 @@ func runArchiveShow(ref string) error {
 		return err
 	}
 	if res.Ref.Topic == nil {
-		return fmt.Errorf("%w (try: schooltools archive find <title words>)", err)
+		return fmt.Errorf("%s blob %s exists at %s but no archived topic references it (try: schooltools archive find <title words>)",
+			res.Kind, res.BlobID, res.BlobPath)
 	}
 	t := res.Ref.Topic
 	if archiveJSON {

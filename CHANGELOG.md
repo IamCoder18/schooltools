@@ -26,8 +26,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and matches topics whose title, URL, or type contains all
   whitespace-separated tokens (AND, case-insensitive). Filters:
   `--ext <pdf|docx|…>`, `--type File|Link`, `--with-bodies`,
-  `--missing-bodies`. Replaces `archive files` and provides a
-  `--plain` TSV stream for `fzf | xargs archive cat`.
+  `--missing-bodies`. Replaces the previous `archive files` enumeration
+  and provides a `--plain` TSV stream for `fzf | xargs archive cat`.
 - `archive show <ref>` prints one topic record + current blob pointers
   + version history. `<ref>` is auto-detected from a numeric topicId,
   a 32-hex metadata UUID, or a 64-hex body SHA-256.
@@ -70,17 +70,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `news --body-format text|html|both` to flatten the `{Html,Text}` body
   shape into a single string for `--json` consumers.
 - `archive files [--ext <ext>] [--course <id>] [--with-bodies] [--json]`
-  to enumerate File-type topics across all archived courses
+  has been removed; use `archive find --type File [--ext ...]` instead
   (KNOWN_ISSUES #18).
 - `archive path --kind metadata|body` to force a specific blob kind when
   auto-detection is ambiguous (KNOWN_ISSUES #20).
-- `archive read <topicId>` now defaults to the archived file body for
+- `archive cat <ref>` now defaults to the archived file body for
   File topics, falling back to the metadata blob when no body is archived
-  or `--meta` is passed (KNOWN_ISSUES #4).
-- `archive topic <id>` accepts the topicId alone and performs a global
+  or `--meta` is passed (KNOWN_ISSUES #5).
+- `archive show <ref>` accepts the topicId alone and performs a global
   reverse lookup; `--course` is now an optional hint, not a hard
   requirement (KNOWN_ISSUES #6).
-- `archive path <topicId>` resolves to the body path for File topics with
+- `archive path <ref>` resolves to the body path for File topics with
   an archived body, otherwise the metadata path (KNOWN_ISSUES #5).
 - `token --refresh` mints a fresh Brightspace OAuth token using the saved
   session cookies — no full SAML re-login required (KNOWN_ISSUES #14).
@@ -180,7 +180,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **P2:** `CourseOrgIDsCSV` (used as the default scope for cross-course
   news, grade finals, etc.) only fetched the first page of
   `manageCourses`, so older enrollments were invisible. It now follows
-  every page (pageSize 20).
+  every page (pageSize 200) and stops on a `PagingInfo.HasMoreItems`
+  envelope when present.
 - **P2:** `--plain` TSV output was emitted through `tabwriter`, which
   was both a lint violation (unchecked write error) and brittle when
   titles contained embedded tabs or newlines. Output now goes through
@@ -219,9 +220,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **P2:** `systemd status` did not flag a unit file whose `ExecStart`
   pre-dates the `archive update` redesign. Such installs run the
   legacy bare `archive` command, which silently stops being a valid
-  operation. `Query()` now appends `[LEGACY — run `schooltools
-  systemd install --force`]` to the unit path so the warning is
-  visible in `systemd status` output.
+  operation. `Query()` now appends the migration warning to
+  `Status.Warnings` (a dedicated field) so the unit path stays a real
+  filesystem location.
 - Errors now print exactly once: cobra's default `Error:` echo is
   silenced (`SilenceErrors = true`) and `Execute()` prints the message
   once to stderr. JSON-mode commands emit `{"error": …}` to stdout

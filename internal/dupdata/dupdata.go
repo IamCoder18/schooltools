@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -142,28 +143,86 @@ func CurrentUserID(jar *cookiejar.Jar) (string, error) {
 // cross-course queries that require `orgUnitIdsCSV=`. The CBE's calendar,
 // due, and update endpoints all reject an empty value, so the caller must
 // always pass at least one id.
+//
+// pageSize is bumped to 200 so a single response covers any realistic
+// student enrollment list (the previous value of 20 silently dropped
+// the rest). When the manageCourses widget returns a PagingInfo
+// envelope, the bookmark chain is followed until exhausted.
 func CourseOrgIDsCSV(jar *cookiejar.Jar) (string, error) {
-	// The manageCourses endpoint is on the LE widget, not the LE API. Reuse
-	// the same query string the legacy `courses` command used.
-	const url = ua.D2LBase + "/d2l/le/manageCourses/api/mycourses" +
-		"?pageSize=20&sort=current&autoPinCourses=false" +
+	const baseURL = ua.D2LBase + "/d2l/le/manageCourses/api/mycourses" +
+		"?pageSize=200&sort=current&autoPinCourses=false" +
 		"&orgUnitTypeId=3&promotePins=true&embedDepth=0&widgetId=287426"
+	ids := map[string]struct{}{}
+	seenPages := 0
+	nextURL := baseURL
+	for nextURL != "" {
+		if seenPages++; seenPages > 25 {
+			return "", fmt.Errorf("manageCourses pagination: exceeded 25 pages (possible loop)")
+		}
+		page, hasMore, err := fetchManageCoursesPage(nextURL, jar)
+		if err != nil {
+			return "", err
+		}
+		for _, id := range page {
+			ids[id] = struct{}{}
+		}
+		if !hasMore {
+			break
+		}
+		nextURL = withBookmark(baseURL, nextURL)
+	}
+	if len(ids) == 0 {
+		return "", fmt.Errorf("no enrolled courses found; pass --org CSV")
+	}
+	out := make([]string, 0, len(ids))
+	for id := range ids {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return strings.Join(out, ","), nil
+}
+
+// fetchManageCoursesPage decodes one page of manageCourses. Returns the
+// list of org unit ids on the page and whether the response indicates
+// more pages are available.
+func fetchManageCoursesPage(rawURL string, jar *cookiejar.Jar) ([]string, bool, error) {
 	var resp struct {
 		Courses []struct {
 			OrgUnitId json.Number `json:"OrgUnitId"`
 		} `json:"Courses"`
+		Paging PagingInfo `json:"PagingInfo"`
 	}
-	if err := FetchJSON(url, jar, &resp); err != nil {
-		return "", err
+	if err := FetchJSON(rawURL, jar, &resp); err != nil {
+		return nil, false, err
 	}
-	if len(resp.Courses) == 0 {
-		return "", fmt.Errorf("no enrolled courses found; pass --org CSV")
-	}
-	ids := make([]string, 0, len(resp.Courses))
+	out := make([]string, 0, len(resp.Courses))
 	for _, c := range resp.Courses {
-		ids = append(ids, c.OrgUnitId.String())
+		out = append(out, c.OrgUnitId.String())
 	}
-	return strings.Join(ids, ","), nil
+	return out, resp.Paging.HasMoreItems && resp.Paging.Bookmark != "", nil
+}
+
+// withBookmark returns rawURL with the bookmark query parameter set to
+// the bookmark value carried in prevURL. The manageCourses widget hands
+// the bookmark back inside its previous page URL; we lift it out so the
+// next request can be built from a known base.
+func withBookmark(baseURL, prevURL string) string {
+	prev, err := url.Parse(prevURL)
+	if err != nil {
+		return baseURL
+	}
+	bm := prev.Query().Get("bookmark")
+	if bm == "" {
+		return baseURL
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return baseURL
+	}
+	q := u.Query()
+	q.Set("bookmark", bm)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // Walk walks an endpoint that uses bookmark pagination. It repeatedly calls

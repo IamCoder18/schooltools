@@ -218,30 +218,18 @@ func isLoginError(err error) bool {
 }
 
 // fetchTocWithTimeout races the live TOC fetch against a deadline. On
-// timeout the caller gets a context.DeadlineExceeded that is mapped to
-// a friendlier archive-suggestion hint. The archive path is unaffected —
-// users get sub-second responses from `content --archive`.
+// timeout the deadline propagates into the HTTP request via the
+// context, so the in-flight call returns promptly with the timeout
+// error instead of leaking the goroutine until the server replies.
+// The archive path is unaffected — users get sub-second responses
+// from `content --archive`.
 func fetchTocWithTimeout(jar *cookiejar.Jar, courseID string, d time.Duration) (content.TocResponse, error) {
 	if d <= 0 {
 		return content.FetchToc(courseID, jar)
 	}
-	type result struct {
-		toc content.TocResponse
-		err error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		toc, err := content.FetchToc(courseID, jar)
-		ch <- result{toc, err}
-	}()
 	ctx, cancel := context.WithTimeout(context.Background(), d)
 	defer cancel()
-	select {
-	case r := <-ch:
-		return r.toc, r.err
-	case <-ctx.Done():
-		return content.TocResponse{}, fmt.Errorf("TOC fetch timed out after %s", d)
-	}
+	return content.FetchTocWithContext(ctx, courseID, jar)
 }
 
 func isTimeoutErr(err error) bool {
