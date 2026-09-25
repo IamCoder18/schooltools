@@ -103,6 +103,7 @@ func printSystemdStatus(action string, st systemd.Status) error {
 			"activates":      st.Activates,
 			"unit_path":      st.UnitPath,
 			"user_dir":       st.UserDir,
+			"warnings":       st.Warnings,
 			"list_timer_raw": st.TimerOutput,
 		}, "", "  ")
 		if err != nil {
@@ -115,6 +116,17 @@ func printSystemdStatus(action string, st systemd.Status) error {
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	defer func() { _ = tw.Flush() }()
 
+	writeWarnings := func() {
+		if len(st.Warnings) == 0 {
+			return
+		}
+		_, _ = fmt.Fprintln(tw, "")
+		_, _ = fmt.Fprintln(tw, "Warnings:")
+		for _, w := range st.Warnings {
+			_, _ = fmt.Fprintln(tw, "  ! "+w)
+		}
+	}
+
 	switch action {
 	case "installed":
 		_, _ = fmt.Fprintf(tw, "Installed:\t%s\n", st.UnitPath)
@@ -126,6 +138,7 @@ func printSystemdStatus(action string, st systemd.Status) error {
 		if st.Last != "" {
 			_, _ = fmt.Fprintf(tw, "Last run:\t%s (%s)\n", st.Last, st.Passed)
 		}
+		writeWarnings()
 		_, _ = fmt.Fprintln(tw, "")
 		_, _ = fmt.Fprintln(tw, "Run `schooltools systemd status` any time to inspect the timer.")
 		_, _ = fmt.Fprintln(tw, "Inspect logs with: journalctl --user -u schooltools-archive.service")
@@ -153,6 +166,7 @@ func printSystemdStatus(action string, st systemd.Status) error {
 				_, _ = fmt.Fprintln(tw, "  "+line)
 			}
 		}
+		writeWarnings()
 	}
 	return nil
 }

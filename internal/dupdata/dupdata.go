@@ -147,7 +147,8 @@ func CurrentUserID(jar *cookiejar.Jar) (string, error) {
 // pageSize is bumped to 200 so a single response covers any realistic
 // student enrollment list (the previous value of 20 silently dropped
 // the rest). When the manageCourses widget returns a PagingInfo
-// envelope, the bookmark chain is followed until exhausted.
+// envelope, the response's Bookmark field drives the next request, and
+// the walker rejects an unchanged bookmark so a loop is caught early.
 func CourseOrgIDsCSV(jar *cookiejar.Jar) (string, error) {
 	const baseURL = ua.D2LBase + "/d2l/le/manageCourses/api/mycourses" +
 		"?pageSize=200&sort=current&autoPinCourses=false" +
@@ -155,21 +156,26 @@ func CourseOrgIDsCSV(jar *cookiejar.Jar) (string, error) {
 	ids := map[string]struct{}{}
 	seenPages := 0
 	nextURL := baseURL
+	var prevBookmark string
 	for nextURL != "" {
 		if seenPages++; seenPages > 25 {
 			return "", fmt.Errorf("manageCourses pagination: exceeded 25 pages (possible loop)")
 		}
-		page, hasMore, err := fetchManageCoursesPage(nextURL, jar)
+		page, nextBookmark, err := fetchManageCoursesPage(nextURL, jar)
 		if err != nil {
 			return "", err
 		}
 		for _, id := range page {
 			ids[id] = struct{}{}
 		}
-		if !hasMore {
+		if nextBookmark == "" {
 			break
 		}
-		nextURL = withBookmark(baseURL, nextURL)
+		if nextBookmark == prevBookmark {
+			return "", fmt.Errorf("manageCourses pagination: bookmark did not advance (possible loop)")
+		}
+		prevBookmark = nextBookmark
+		nextURL = withBookmark(baseURL, nextBookmark)
 	}
 	if len(ids) == 0 {
 		return "", fmt.Errorf("no enrolled courses found; pass --org CSV")
@@ -183,9 +189,9 @@ func CourseOrgIDsCSV(jar *cookiejar.Jar) (string, error) {
 }
 
 // fetchManageCoursesPage decodes one page of manageCourses. Returns the
-// list of org unit ids on the page and whether the response indicates
-// more pages are available.
-func fetchManageCoursesPage(rawURL string, jar *cookiejar.Jar) ([]string, bool, error) {
+// list of org unit ids on the page and the bookmark value to use for the
+// next request (empty string when there are no more pages).
+func fetchManageCoursesPage(rawURL string, jar *cookiejar.Jar) ([]string, string, error) {
 	var resp struct {
 		Courses []struct {
 			OrgUnitId json.Number `json:"OrgUnitId"`
@@ -193,28 +199,22 @@ func fetchManageCoursesPage(rawURL string, jar *cookiejar.Jar) ([]string, bool, 
 		Paging PagingInfo `json:"PagingInfo"`
 	}
 	if err := FetchJSON(rawURL, jar, &resp); err != nil {
-		return nil, false, err
+		return nil, "", err
 	}
 	out := make([]string, 0, len(resp.Courses))
 	for _, c := range resp.Courses {
 		out = append(out, c.OrgUnitId.String())
 	}
-	return out, resp.Paging.HasMoreItems && resp.Paging.Bookmark != "", nil
+	if !resp.Paging.HasMoreItems {
+		return out, "", nil
+	}
+	return out, resp.Paging.Bookmark, nil
 }
 
-// withBookmark returns rawURL with the bookmark query parameter set to
-// the bookmark value carried in prevURL. The manageCourses widget hands
-// the bookmark back inside its previous page URL; we lift it out so the
-// next request can be built from a known base.
-func withBookmark(baseURL, prevURL string) string {
-	prev, err := url.Parse(prevURL)
-	if err != nil {
-		return baseURL
-	}
-	bm := prev.Query().Get("bookmark")
-	if bm == "" {
-		return baseURL
-	}
+// withBookmark returns baseURL with the bookmark query parameter set to
+// bm. ManageCourses doesn't echo the bookmark back inside its previous
+// page URL, so we set it directly from the response's PagingInfo.
+func withBookmark(baseURL, bm string) string {
 	u, err := url.Parse(baseURL)
 	if err != nil {
 		return baseURL

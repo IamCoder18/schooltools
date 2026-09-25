@@ -274,10 +274,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **P2:** `systemd status` advertised the LEGACY warning by
   appending `[LEGACY — ...]` to `Status.UnitPath`, which leaked the
   warning into code that consumed the path as a real filesystem
-  location. The warning now lives in `Status.Warnings []string`, and
-  `legacyExecStart` parses `ExecStart=` lines explicitly so a
-  mention of "archive update" in a `Description=` line cannot suppress
-  the warning.
+  location. The warning now lives in `Status.Warnings []string`,
+  rendered as a separate "Warnings:" block by `printSystemdStatus`
+  (and surfaced in its JSON envelope), and `legacyExecStart` parses
+  `ExecStart=` lines explicitly so a mention of "archive update" in
+  a `Description=` line cannot suppress the warning.
+- **P2:** `news list` with an HTML-only body silently dropped the
+  content in the default text format. `flattenBody` now runs a
+  conservative HTML→text conversion (strip tags, collapse whitespace,
+  decode the common entities) so the user gets a readable body
+  without losing information.
+- **P2:** `news list` accepted malformed `--since` / `--until`
+  values, then either skipped filtering or fell back to a raw string
+  compare. `runNewsList` now validates both bounds up front and
+  returns an error when the value cannot be parsed.
+- **P2:** `archive export` `uniqueDest` only checked the in-memory
+  `used` map; if the suffixed candidate already existed on disk
+  from an earlier run, `copyFile` would fail with `O_EXCL` after
+  other files had been written. `uniqueDest` now stat-checks each
+  candidate against the filesystem until it finds an unused name.
+- **P2:** `CourseOrgIDsCSV` walked bookmark pagination by reading
+  the bookmark off the previous URL, but the manageCourses widget
+  doesn't echo it there — the loop requested the first page 25 times
+  and then gave up. The walker now uses the `PagingInfo.Bookmark`
+  returned by each response and rejects an unchanged bookmark so a
+  loop is caught immediately.
 
 ## [0.2.0] - 2026-09-05
 

@@ -200,15 +200,29 @@ func sanitizeFilename(s string) string {
 func uniqueDest(dir, base, ext string, used map[string]int) string {
 	key := filepath.Join(dir, base+"."+ext)
 	if n, ok := used[key]; ok {
-		used[key] = n + 1
-		return filepath.Join(dir, fmt.Sprintf("%s (%d).%s", base, n+1, ext))
+		n++
+		for {
+			candidate := filepath.Join(dir, fmt.Sprintf("%s (%d).%s", base, n, ext))
+			if _, statErr := os.Stat(candidate); os.IsNotExist(statErr) {
+				used[key] = n
+				return candidate
+			}
+			n++
+		}
 	}
 	used[key] = 1
-	if _, err := os.Stat(key); os.IsNotExist(err) {
+	if _, statErr := os.Stat(key); os.IsNotExist(statErr) {
 		return key
 	}
-	used[key] = 2
-	return filepath.Join(dir, fmt.Sprintf("%s (2).%s", base, ext))
+	n := 2
+	for {
+		candidate := filepath.Join(dir, fmt.Sprintf("%s (%d).%s", base, n, ext))
+		if _, statErr := os.Stat(candidate); os.IsNotExist(statErr) {
+			used[key] = n
+			return candidate
+		}
+		n++
+	}
 }
 
 func copyFile(src, dst string) error {

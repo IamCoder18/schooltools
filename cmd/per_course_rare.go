@@ -196,11 +196,69 @@ func flattenBody(n NewsItem, format string) (string, string) {
 		if b.Text != "" {
 			return b.Text, ""
 		}
-		return "", ""
+		return htmlToText(b.Html), b.Html
 	}
 }
 
+// htmlToText is a deliberately conservative HTML→text conversion. We
+// only drop tags, collapse runs of whitespace, and decode the handful
+// of entities that commonly appear in D2L news bodies (& < >
+// " ' &nbsp;). Anything richer (tables, images, embedded
+// styles) is left as-is in the HTML, which the caller can request
+// explicitly with --body-format html.
+func htmlToText(s string) string {
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	inTag := false
+	for _, r := range s {
+		switch {
+		case r == '<':
+			inTag = true
+		case r == '>':
+			inTag = false
+			b.WriteRune(' ')
+		case inTag:
+			// skip tag contents
+		default:
+			b.WriteRune(r)
+		}
+	}
+	r := strings.NewReplacer(
+		`&`, "&",
+		`<`, "<",
+		`>`, ">",
+		"\"", `"`,
+		`&apos;`, "'",
+		`&nbsp;`, " ",
+	)
+	out := r.Replace(b.String())
+	out = collapseSpaces(out)
+	return strings.TrimSpace(out)
+}
+
+func collapseSpaces(s string) string {
+	var b strings.Builder
+	prevSpace := false
+	for _, r := range s {
+		if r == ' ' || r == '\n' || r == '\t' || r == '\r' {
+			if !prevSpace {
+				b.WriteRune(' ')
+				prevSpace = true
+			}
+			continue
+		}
+		b.WriteRune(r)
+		prevSpace = false
+	}
+	return b.String()
+}
+
 func runNewsList() error {
+	if err := validateNewsBounds(); err != nil {
+		return err
+	}
 	ens, err := newsSession()
 	if err != nil {
 		return err
@@ -370,7 +428,7 @@ func newsListJSONOne(n NewsItem, sourceCourse string) []newsListJSONItem {
 // timestamps so equivalent instants with different serialisations
 // (fractional seconds, varying timezone offsets) compare correctly; a
 // fallback to ISO-8601 string comparison handles the rare case of an
-// unparseable value so the existing exclusion behaviour is preserved.
+// unparseable item StartDate.
 func withinRange(n NewsItem, since, until string) bool {
 	if since != "" {
 		if ts, err := parseNewsDate(n.StartDate); err == nil {
@@ -391,6 +449,23 @@ func withinRange(n NewsItem, since, until string) bool {
 		}
 	}
 	return true
+}
+
+// validateNewsBounds rejects malformed --since / --until values up front
+// so withinRange never silently includes out-of-range items behind a
+// successful result.
+func validateNewsBounds() error {
+	if newsSince != "" {
+		if _, err := parseNewsDate(newsSince); err != nil {
+			return fmt.Errorf("invalid --since %q: %w", newsSince, err)
+		}
+	}
+	if newsUntil != "" {
+		if _, err := parseNewsDate(newsUntil); err != nil {
+			return fmt.Errorf("invalid --until %q: %w", newsUntil, err)
+		}
+	}
+	return nil
 }
 
 // parseNewsDate accepts the ISO-8601 forms D2L emits (with or without
