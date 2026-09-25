@@ -53,6 +53,7 @@ type Status struct {
 	UserDir       string   // ~/.config/systemd/user
 	TimerOutput   []string // raw `systemctl --user list-timers` lines
 	ListTimerExit int      // exit code from systemctl
+	Warnings      []string // human-readable warnings surfaced by Query (e.g. legacy ExecStart)
 }
 
 // renderExecStart returns the ExecStart string to bake into the service unit.
@@ -97,18 +98,34 @@ func isVolatilePath(p string) bool {
 }
 
 // legacyExecStart reports whether the on-disk service unit still calls the
-// pre-archive-UX-redesign form (e.g. `archive` / `prune`). Returns true
-// when the ExecStart line does not contain `archive update`.
+// pre-archive-UX-redesign form (e.g. `archive` / `prune`). Parses each
+// ExecStart= directive (skipping comments and unrelated lines) and returns
+// true when none of them invoke `archive update`. A bare mention of
+// "archive update" in a Description= line cannot suppress the warning.
 func legacyExecStart(svcPath string) bool {
 	data, err := os.ReadFile(svcPath)
 	if err != nil {
 		return false
 	}
-	body := string(data)
-	if !strings.Contains(body, "ExecStart=") {
+	anyUpdate := false
+	anyExec := false
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if !strings.HasPrefix(line, "ExecStart=") {
+			continue
+		}
+		anyExec = true
+		if strings.Contains(line, "archive update") {
+			anyUpdate = true
+		}
+	}
+	if !anyExec {
 		return false
 	}
-	return !strings.Contains(body, "archive update")
+	return !anyUpdate
 }
 
 // unitDir returns ~/.config/systemd/user, expanded. Returns an error if $HOME
@@ -243,7 +260,8 @@ func Query() (Status, error) {
 		return st, nil
 	}
 	if legacyExecStart(svcPath) {
-		st.UnitPath = svcPath + " [LEGACY — run `schooltools systemd install --force`]"
+		st.Warnings = append(st.Warnings,
+			"service unit uses a pre-archive-update ExecStart; rerun `schooltools systemd install --force` to upgrade in place")
 	}
 
 	// is-enabled

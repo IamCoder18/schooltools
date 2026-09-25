@@ -199,12 +199,16 @@ func sanitizeFilename(s string) string {
 
 func uniqueDest(dir, base, ext string, used map[string]int) string {
 	key := filepath.Join(dir, base+"."+ext)
-	n := used[key]
-	used[key] = n + 1
-	if n == 0 {
+	if n, ok := used[key]; ok {
+		used[key] = n + 1
+		return filepath.Join(dir, fmt.Sprintf("%s (%d).%s", base, n+1, ext))
+	}
+	used[key] = 1
+	if _, err := os.Stat(key); os.IsNotExist(err) {
 		return key
 	}
-	return filepath.Join(dir, fmt.Sprintf("%s (%d).%s", base, n+1, ext))
+	used[key] = 2
+	return filepath.Join(dir, fmt.Sprintf("%s (2).%s", base, ext))
 }
 
 func copyFile(src, dst string) error {
@@ -213,7 +217,7 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	defer func() { _ = in.Close() }()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return err
 	}

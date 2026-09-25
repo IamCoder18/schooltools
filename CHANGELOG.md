@@ -241,6 +241,42 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **P2:** `TestRepro_Issue4` masked a body-download regression with
   `t.Skip` when `BodiesFetched == 0`. The skip is now `t.Fatalf`, so
   any future regression fails the test instead of being silenced.
+- **P2:** `content --depth` silently ignored negative values. It now
+  returns an explicit error so a typo (e.g. `--depth -1`) doesn't
+  quietly fall through to "no limit".
+- **P2:** `news list` filtered `--until` results with a raw
+  ISO-8601 string compare, which breaks for timestamps with a
+  fractional-second component or non-Z timezone. The check now parses
+  the dates with `time.RFC3339Nano` / `time.RFC3339` and falls back to
+  string compare only on unparseable values.
+- **P2:** `news list` defaulted an HTML-only body to returning raw
+  HTML as the text body. The text field is now empty when the news
+  item has no `Text` companion; users can pass `--body-format html`
+  or `--body-format both` to see the HTML.
+- **P2:** `token --refresh` looked for session cookies at
+  `ua.D2LBase` and `ua.LoginEndpoint`, but those URLs don't actually
+  receive the cookies that `mintBrightspaceToken` depends on. The
+  probe now checks `/d2l/home` and the OAuth token endpoint, so the
+  empty-jar detection matches the cookie domains the request really
+  uses.
+- **P2:** `archive prune` silently swallowed a failed `LoadIndex`
+  after the apply pass, so the global index never converged to v4
+  when the read failed. The load error is now returned with context,
+  and the missing-blobs-dir branch also bumps `idx.Version` so the
+  schema converges even on stores that never created `blobs/`.
+- **P2:** `archive export` overwrote existing destination files
+  (`O_CREATE|O_TRUNC`) and only deduplicated names that the in-memory
+  `used` map had already seen. Existing files on disk were treated as
+  fresh writes. `uniqueDest` now seeds from `os.Stat`, and `copyFile`
+  opens with `O_EXCL` so any remaining name collision fails loudly
+  instead of silently overwriting user data.
+- **P2:** `systemd status` advertised the LEGACY warning by
+  appending `[LEGACY — ...]` to `Status.UnitPath`, which leaked the
+  warning into code that consumed the path as a real filesystem
+  location. The warning now lives in `Status.Warnings []string`, and
+  `legacyExecStart` parses `ExecStart=` lines explicitly so a
+  mention of "archive update" in a `Description=` line cannot suppress
+  the warning.
 
 ## [0.2.0] - 2026-09-05
 

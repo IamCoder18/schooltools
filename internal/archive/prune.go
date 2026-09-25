@@ -39,6 +39,15 @@ func prune(root string, apply bool) (PruneResult, error) {
 				if terr != nil {
 					return res, terr
 				}
+				idx, idxErr := LoadIndex(root)
+				if idxErr != nil {
+					return res, fmt.Errorf("archive: bump index version (blobs dir was absent, trim may have rewritten indexes; load index: %w)", idxErr)
+				}
+				idx.Version = SchemaVersion
+				idx.UpdatedAt = time.Now().UTC()
+				if saveErr := SaveIndex(root, idx); saveErr != nil {
+					return res, fmt.Errorf("archive: bump index version: %w", saveErr)
+				}
 			}
 			return res, nil
 		}
@@ -98,12 +107,13 @@ func prune(root string, apply bool) (PruneResult, error) {
 			return res, terr
 		}
 		idx, idxErr := LoadIndex(root)
-		if idxErr == nil {
-			idx.Version = SchemaVersion
-			idx.UpdatedAt = time.Now().UTC()
-			if saveErr := SaveIndex(root, idx); saveErr != nil {
-				return res, fmt.Errorf("archive: bump index version: %w", saveErr)
-			}
+		if idxErr != nil {
+			return res, fmt.Errorf("archive: bump index version after trim (load index: %w; prune may already have changed per-course indexes)", idxErr)
+		}
+		idx.Version = SchemaVersion
+		idx.UpdatedAt = time.Now().UTC()
+		if saveErr := SaveIndex(root, idx); saveErr != nil {
+			return res, fmt.Errorf("archive: bump index version: %w", saveErr)
 		}
 		return res, nil
 	}

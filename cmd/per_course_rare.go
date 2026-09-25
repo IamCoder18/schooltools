@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -195,7 +196,7 @@ func flattenBody(n NewsItem, format string) (string, string) {
 		if b.Text != "" {
 			return b.Text, ""
 		}
-		return b.Html, ""
+		return "", ""
 	}
 }
 
@@ -365,17 +366,47 @@ func newsListJSONOne(n NewsItem, sourceCourse string) []newsListJSONItem {
 }
 
 // withinRange filters by the newsUntil bound locally, since D2L's `until`
-// parameter is not always honoured by every endpoint. ISO-8601 strings
-// compare lexicographically, so a prefix-style check is enough for the
-// `since`/`until` we accept here.
+// parameter is not always honoured by every endpoint. We compare parsed
+// timestamps so equivalent instants with different serialisations
+// (fractional seconds, varying timezone offsets) compare correctly; a
+// fallback to ISO-8601 string comparison handles the rare case of an
+// unparseable value so the existing exclusion behaviour is preserved.
 func withinRange(n NewsItem, since, until string) bool {
-	if since != "" && n.StartDate < since {
-		return false
+	if since != "" {
+		if ts, err := parseNewsDate(n.StartDate); err == nil {
+			if sinceTS, err := parseNewsDate(since); err == nil && ts.Before(sinceTS) {
+				return false
+			}
+		} else if n.StartDate < since {
+			return false
+		}
 	}
-	if until != "" && n.StartDate > until {
-		return false
+	if until != "" {
+		if ts, err := parseNewsDate(n.StartDate); err == nil {
+			if untilTS, err := parseNewsDate(until); err == nil && ts.After(untilTS) {
+				return false
+			}
+		} else if n.StartDate > until {
+			return false
+		}
 	}
 	return true
+}
+
+// parseNewsDate accepts the ISO-8601 forms D2L emits (with or without
+// fractional seconds, with a Z or a numeric offset). Returns the
+// zero time on failure so the caller can fall back to string compare.
+func parseNewsDate(s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, fmt.Errorf("empty date")
+	}
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("unrecognised date %q", s)
 }
 
 func runNewsGet(newsID string) error {

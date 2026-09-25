@@ -138,10 +138,12 @@ func runContentList(courseID string) error {
 	}
 	flatRows := content.FlattenToc(toc.Modules)
 
+	if contentDepth < 0 {
+		return fmt.Errorf("--depth must be >= 0 (got %d)", contentDepth)
+	}
 	if contentDepth > 0 {
 		flatRows = depthFilter(flatRows, contentDepth)
 	}
-
 	if contentJSON && contentTree {
 		return fmt.Errorf("--tree and --json are mutually exclusive")
 	}

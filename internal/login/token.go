@@ -207,7 +207,7 @@ func sessionHasNoCookies(jar *cookiejar.Jar) bool {
 	// returns zero cookies for the only host we know matters
 	// (ua.D2LBase), the jar is empty.
 	all := []*url.URL{}
-	for _, u := range []string{ua.D2LBase, ua.LoginEndpoint} {
+	for _, u := range []string{ua.D2LBase + "/d2l/home", D2LTokenEndpoint} {
 		parsed, err := url.Parse(u)
 		if err != nil {
 			continue
