@@ -139,19 +139,44 @@ func ptrStr(s string) *string { return &s }
 // archived, not always fall back to metadata.
 func TestRepro_Issue20_BodyAndMetaPathDistinct(t *testing.T) {
 	dir := t.TempDir()
+	bodySHA, _, err := SaveFileBody(dir, []byte("hello"))
+	if err != nil {
+		t.Fatalf("SaveFileBody: %v", err)
+	}
+	metaUUID, _, err := SaveBlob(dir, []byte(`{"TopicId":42}`))
+	if err != nil {
+		t.Fatalf("SaveBlob: %v", err)
+	}
 	ci := &CourseIndex{CourseID: "1", Topics: map[int]*TopicIndex{
-		42: {TopicID: 42, Current: "deadbeefcafebabedeadbeefcafebabe", CurrentBody: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+		42: {TopicID: 42, Type: "File", Current: metaUUID, CurrentBody: bodySHA},
 	}}
 	if err := SaveCourseIndex(dir, "1", ci); err != nil {
 		t.Fatalf("SaveCourseIndex: %v", err)
 	}
-	// Save an empty body blob so the on-disk lookup succeeds.
-	if _, _, err := SaveFileBody(dir, []byte("hello")); err != nil {
-		t.Fatalf("SaveFileBody: %v", err)
+
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
 	}
-	// Save a metadata blob too.
-	if _, _, err := SaveBlob(dir, []byte(`{"TopicId":42}`)); err != nil {
-		t.Fatalf("SaveBlob: %v", err)
+	res, err := store.Resolve("42", "")
+	if err != nil {
+		t.Fatalf("Resolve topic 42: %v", err)
+	}
+	if res.Kind != "body" {
+		t.Errorf("Resolve(\"42\", \"\").Kind = %q, want %q", res.Kind, "body")
+	}
+	if res.BlobID != bodySHA {
+		t.Errorf("Resolve(\"42\", \"\").BlobID = %q, want %q", res.BlobID, bodySHA)
+	}
+	metaRes, err := store.Resolve("42", "metadata")
+	if err != nil {
+		t.Fatalf("Resolve topic 42 metadata: %v", err)
+	}
+	if metaRes.Kind != "metadata" {
+		t.Errorf("Resolve(\"42\", \"metadata\").Kind = %q, want %q", metaRes.Kind, "metadata")
+	}
+	if metaRes.BlobID != metaUUID {
+		t.Errorf("Resolve(\"42\", \"metadata\").BlobID = %q, want %q", metaRes.BlobID, metaUUID)
 	}
 }
 
@@ -185,7 +210,7 @@ func TestRepro_Issue4_ArchiveReadDefaultsToBodyForFile(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 	if res.BodiesFetched == 0 {
-		t.Skip("body fetch didn't run; not a body-archive scenario")
+		t.Fatalf("BodiesFetched = 0, want 1 (BodiesFailed=%d)", res.BodiesFailed)
 	}
 	ci, err := LoadCourseIndex(dir, "1010")
 	if err != nil {

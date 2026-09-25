@@ -42,7 +42,7 @@ type InstallOptions struct {
 type Status struct {
 	Installed     bool     // true if the .service file is on disk
 	Enabled       bool     // true if systemctl says the timer is enabled
-	Active         bool     // true if the timer is currently active
+	Active        bool     // true if the timer is currently active
 	Next          string   // next scheduled run, formatted by systemctl
 	Left          string   // relative time until Next (e.g., "20min")
 	Last          string   // last run, if any
@@ -94,6 +94,21 @@ func isVolatilePath(p string) bool {
 		}
 	}
 	return false
+}
+
+// legacyExecStart reports whether the on-disk service unit still calls the
+// pre-archive-UX-redesign form (e.g. `archive` / `prune`). Returns true
+// when the ExecStart line does not contain `archive update`.
+func legacyExecStart(svcPath string) bool {
+	data, err := os.ReadFile(svcPath)
+	if err != nil {
+		return false
+	}
+	body := string(data)
+	if !strings.Contains(body, "ExecStart=") {
+		return false
+	}
+	return !strings.Contains(body, "archive update")
 }
 
 // unitDir returns ~/.config/systemd/user, expanded. Returns an error if $HOME
@@ -209,7 +224,10 @@ func Uninstall() (Status, error) {
 }
 
 // Query inspects the current state: are the units on disk? is the timer
-// enabled? what's the next run time?
+// enabled? what's the next run time? Also flags when the installed service
+// was written by an older schooltools release whose ExecStart pre-dates the
+// `archive update` redesign — running `schooltools systemd install --force`
+// upgrades the unit in place.
 func Query() (Status, error) {
 	dir, err := unitDir()
 	if err != nil {
@@ -223,6 +241,9 @@ func Query() (Status, error) {
 	st := Status{Installed: installed, UnitPath: svcPath, UserDir: dir}
 	if !installed {
 		return st, nil
+	}
+	if legacyExecStart(svcPath) {
+		st.UnitPath = svcPath + " [LEGACY — run `schooltools systemd install --force`]"
 	}
 
 	// is-enabled
@@ -286,6 +307,7 @@ func Query() (Status, error) {
 // the six semantic columns. Robust to either layout:
 //   - NEXT is `-` (timer never fired):  firstDOW is at the LAST position
 //   - NEXT is a real datetime:           firstDOW is at position 0
+//
 // We anchor on the LAST datetime (second day-of-week token) which is always
 // present, then derive everything else relative to it.
 func splitTimerFields(f []string) (next, left, last, passed, unit, activates string, ok bool) {

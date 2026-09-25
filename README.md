@@ -209,9 +209,9 @@ modified topics get a brand-new blob under `blobs/<uuid>.json`. The
 old blob is left on disk untouched and the topic's `versions` history
 grows. `update` converges: it also fills in any File topic whose
 body is missing on disk (whether because the first attempt errored,
-or because the body was deleted by a future prune that didn't yet
-run), so the archive converges to "every File topic has a body" after
-each pass.
+because an earlier run was invoked with `--no-bodies`, or because
+the blob was manually removed), so the archive converges to "every
+File topic has a body" after each pass.
 
 The `archive` blob store is **never** modified or deleted by `update`.
 Reclamation happens via `archive prune --delete`.

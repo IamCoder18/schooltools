@@ -165,7 +165,7 @@ func MintTokenFromSavedSession() (*session.TokenRecord, error) {
 	if err != nil {
 		return nil, fmt.Errorf("refresh: load session jar: %w", err)
 	}
-	if jar == nil {
+	if jar == nil || sessionHasNoCookies(jar) {
 		return nil, fmt.Errorf("refresh: no saved session — run `schooltools login` first")
 	}
 	return mintBrightspaceToken(jar)
@@ -176,7 +176,7 @@ func refresh(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("refresh: load session jar: %w", err)
 	}
-	if jar == nil {
+	if jar == nil || sessionHasNoCookies(jar) {
 		return "", fmt.Errorf("refresh: no saved session — run `schooltools login` first")
 	}
 	rec, err := mintBrightspaceToken(jar)
@@ -191,4 +191,32 @@ func refresh(ctx context.Context) (string, error) {
 	}
 	httpclient.InvalidateBearerCache()
 	return rec.AccessToken, nil
+}
+
+// sessionHasNoCookies reports whether the jar has no cookies at all
+// (which is indistinguishable from a fresh, empty jar). LoadJar always
+// returns a non-nil jar even when there are no persisted cookies, so the
+// nil check alone is not enough — we also have to confirm something got
+// loaded.
+func sessionHasNoCookies(jar *cookiejar.Jar) bool {
+	if jar == nil {
+		return true
+	}
+	// cookiejar doesn't expose a direct count; the public Cookies method
+	// only works for a single URL. Walk a synthetic empty URL — if it
+	// returns zero cookies for the only host we know matters
+	// (ua.D2LBase), the jar is empty.
+	all := []*url.URL{}
+	for _, u := range []string{ua.D2LBase, ua.LoginEndpoint} {
+		parsed, err := url.Parse(u)
+		if err != nil {
+			continue
+		}
+		all = append(all, parsed)
+	}
+	total := 0
+	for _, u := range all {
+		total += len(jar.Cookies(u))
+	}
+	return total == 0
 }

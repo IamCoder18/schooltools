@@ -39,7 +39,11 @@ type jsonError struct{ Err error }
 func (e *jsonError) Error() string { return e.Err.Error() }
 func (e *jsonError) Unwrap() error { return e.Err }
 
-func showJSONError(err error) error {
+// ShowJSONError emits `{"error": …}` to stdout and returns a sentinel
+// that Execute() recognises via errors.As to suppress its own
+// "Error: …" stderr line. Used by commands that have already rendered
+// the failure as JSON for the caller.
+func ShowJSONError(err error) error {
 	if err == nil {
 		return nil
 	}
@@ -51,7 +55,7 @@ func showJSONError(err error) error {
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		var je *jsonError
-		if !errors.As(err, &je) {
+		if !errors.As(err, &je) && !errors.Is(err, errJSONShown) {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		}
 		os.Exit(1)

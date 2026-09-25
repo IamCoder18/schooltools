@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http/cookiejar"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -281,11 +282,16 @@ func printTree(modules []content.TocModule, rows []content.FlatRow, depth int) {
 	fmt.Printf("%d items — %d module%s, %d topic%s\n",
 		len(rows), modulesN, plural(modulesN), topicsN, plural(topicsN))
 
-	out := tree.RenderTOC(modules, tree.Options{
+	pruned := modules
+	if depth > 0 {
+		pruned = pruneModulesByDepth(modules, depth)
+	}
+	out := tree.RenderTOC(pruned, tree.Options{
 		ShowKind:  true,
 		ShowType:  true,
 		ShowDate:  true,
 		ShowFlags: true,
+		MaxDepth:  depth,
 		TopicLabelHook: func(t content.TocTopic) string {
 			if t.TypeIdentifier != "File" && topicTypeNumber(t) != 1 {
 				return ""
@@ -294,18 +300,51 @@ func printTree(modules []content.TocModule, rows []content.FlatRow, depth int) {
 				return ""
 			}
 			u := *t.Url
-			dot := strings.LastIndex(u, ".")
-			slash := strings.LastIndex(u, "/")
-			if dot < 0 || dot < slash || dot == len(u)-1 {
+			parsed, err := url.Parse(u)
+			if err != nil {
 				return ""
 			}
-			return u[dot+1:]
+			ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(parsed.Path)), ".")
+			if ext == "" || strings.ContainsAny(ext, "/\\") || len(ext) > 8 {
+				return ""
+			}
+			return ext
 		},
 	})
 	fmt.Print(out)
 	if depth > 0 {
 		fmt.Printf("\n(limited to depth %d)\n", depth)
 	}
+}
+
+// pruneModulesByDepth returns modules trimmed so no descendant is below
+// `max`. Modules whose own depth equals max still render (they appear in
+// the table as headers) but their child topics are dropped.
+func pruneModulesByDepth(modules []content.TocModule, max int) []content.TocModule {
+	if max <= 0 {
+		return modules
+	}
+	var walk func(m content.TocModule, depth int) content.TocModule
+	walk = func(m content.TocModule, depth int) content.TocModule {
+		if depth >= max {
+			return content.TocModule{ModuleId: m.ModuleId, Title: m.Title, LastModifiedDate: m.LastModifiedDate, IsHidden: m.IsHidden, IsLocked: m.IsLocked}
+		}
+		out := m
+		out.Modules = nil
+		for _, c := range m.Modules {
+			if cm := walk(c, depth+1); cm.ModuleId != 0 || cm.Title != "" {
+				out.Modules = append(out.Modules, cm)
+			}
+		}
+		return out
+	}
+	out := make([]content.TocModule, 0, len(modules))
+	for _, m := range modules {
+		if cm := walk(m, 1); cm.ModuleId != 0 || cm.Title != "" {
+			out = append(out, cm)
+		}
+	}
+	return out
 }
 
 // topicTypeNumber mirrors the TopicType discriminator used by the TOC.
@@ -409,13 +448,13 @@ func runContentListFromArchive(courseID string) error {
 	}
 
 	type flatRow struct {
-		Id        int
-		Title     string
-		URL       string
-		Type      string
-		Modified  string
-		UUID      string
-		Versions  int
+		Id       int
+		Title    string
+		URL      string
+		Type     string
+		Modified string
+		UUID     string
+		Versions int
 	}
 	var rows []flatRow
 	for id, t := range idx.Topics {

@@ -58,8 +58,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `internal/archive.Store` loads the global index plus every per-course
   index exactly once and serves O(1) topic / metadata-uuid / body-sha
   lookups. `archive find`, `archive show`, `archive cat`, `archive path`,
-  `archive status`, `archive verify`, and `archive export` all use it,
-  so repeated queries never re-read the per-course indexes.
+  `archive verify`, and `archive export` all use it, so repeated queries
+  never re-read the per-course indexes.
 - `internal/archive.Verify`, `internal/archive.Export`,
   `internal/archive.PrunePlan`, `internal/archive.Prune`,
   `internal/archive.OpenStore`, `internal/archive.LoadStatus` are the
@@ -142,9 +142,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **P0:** `archive prune` (was top-level `prune --dry-run`) was
   documented as a no-op preview but actually deleted blobs. `PrunePlan`
   is now the read-only planner; `Prune` requires `--delete` and is the
-  only thing that removes files. KNOWN_ISSUES #4 (the destructive
-  `--dry-run`) was filed in `KNOWN_ISSUES.md` under the original
-  issue number for traceability.
+  only thing that removes files.
 - **P0:** `prune` previously deleted every `.bin` body blob, including
   the live `CurrentBody` of every File topic — the `live` set only
   contained metadata UUIDs and the body-blob extension was never
@@ -153,15 +151,96 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **P1:** `prune` left `Versions` / `BodyVersions` records pointing at
   deleted blobs (dangling pointers). `Prune` now rewrites per-course
   indexes in the same pass, so `archive show` can never print a dead
-  uuid.
+  uuid. After pruning, the global index is bumped to SchemaVersion 4
+  so the new shape is detected on next read.
 - **P1:** Bodies that failed to download (or were skipped because the
   metadata was unchanged) stayed missing forever. `archive update`
   now retries every File topic whose body is absent on disk, even when
   the metadata hasn't moved.
+- **P1:** `archive update --dry-run` no longer takes the archive lock,
+  so concurrent dry-runs (or a dry-run against an in-flight real run)
+  return the planned plan instead of `ErrAlreadyRunning`. The preview
+  also honours `--no-bodies` so body counts match a real update pass.
+- **P1:** `archive verify` reported existing v3 stores as invalid
+  indefinitely because the SchemaVersion field was only read, never
+  written. `Run` and `Prune` now stamp `idx.Version = SchemaVersion`
+  on every successful save, so the index converges to v4 the first
+  time either runs.
+- **P1:** `archive cat --meta` on a File topic pointed at the body SHA,
+  not the topic's metadata UUID, so the wrong blob was loaded.
+  `--meta` now requires a topic reference and uses its `Current`
+  metadata pointer.
+- **P1:** Bare `archive` (and `archive verify`) used to create
+  `archive.lock` and its parent directory just to read its state.
+  Status now inspects the lock file read-only without side effects.
+- **P2:** `news list --course` was rejected because `news` subcommands
+  wired shared flags with cobra `AddFlagSet`, which doesn't rebind
+  package variables. Subcommands now register shared flags directly
+  via `registerNewsFlags`.
+- **P2:** `CourseOrgIDsCSV` (used as the default scope for cross-course
+  news, grade finals, etc.) only fetched the first page of
+  `manageCourses`, so older enrollments were invisible. It now follows
+  every page (pageSize 20).
+- **P2:** `--plain` TSV output was emitted through `tabwriter`, which
+  was both a lint violation (unchecked write error) and brittle when
+  titles contained embedded tabs or newlines. Output now goes through
+  a `tsvWriteLine` helper that sanitises every field.
+- **P2:** `archive export` silently dropped refs that failed to
+  resolve instead of returning an error. It now returns the first
+  failure with the offending ref. Missing body blobs are recorded as
+  `skipped-missing-body` in dry-run output too. `copyFile` now reports
+  close-time write errors.
+- **P2:** `archive find --missing-bodies` counted non-File topics with
+  an empty `CurrentBody`. The filter now requires `Type == "" ||
+  Type == "File"` before counting a topic as missing.
+- **P2:** `token --refresh --json` ignored `--json`. Now emits the
+  token record as JSON and skips the human-readable line.
+- **P2:** `doctor` conflated "SAML expired" and "Brightspace token
+  expired" advice, and told users to `token --refresh` even when the
+  saved session was already gone. The two warnings are now
+  independent and `token --refresh` is only suggested when both the
+  session is valid and a `RefreshToken` is recorded.
+- **P2:** `content --tree --depth N` rendered `depth=N+1` levels
+  because `printTree` was passed the original module list. Modules
+  are now pruned before rendering and `tree.Options.MaxDepth` caps
+  both modules and topics. Topic-label extension parsing now uses
+  `url.Parse(...).Path` so query strings and fragments don't leak
+  into the `[File.<ext>]` bracket.
+- **P2:** Cross-course `news list` returned a successful empty list
+  even when every per-course fetch failed. It now returns an error
+  unless at least one course's fetch succeeded.
+- **P2:** `Execute()` printed the error twice when a JSON-mode
+  command emitted its own `{"error": …}` envelope and the wrapped
+  sentinel `*jsonError` was still matched by `errors.As`. We also
+  suppress on `errors.Is(err, errJSONShown)`.
+- **P2:** `token --refresh` minted a token from an empty jar when the
+  `session.json` was missing. It now treats an empty jar the same as
+  a missing one and asks the user to run `schooltools login`.
+- **P2:** `systemd status` did not flag a unit file whose `ExecStart`
+  pre-dates the `archive update` redesign. Such installs run the
+  legacy bare `archive` command, which silently stops being a valid
+  operation. `Query()` now appends `[LEGACY — run `schooltools
+  systemd install --force`]` to the unit path so the warning is
+  visible in `systemd status` output.
 - Errors now print exactly once: cobra's default `Error:` echo is
   silenced (`SilenceErrors = true`) and `Execute()` prints the message
   once to stderr. JSON-mode commands emit `{"error": …}` to stdout
   instead.
+- **P2:** `archive lock` checked the PID written in `archive.lock`
+  *after* `flock` already succeeded. A successful flock is itself proof
+  that no other process holds the lock, so the PID check only mattered
+  when PID reuse caused the recorded PID to look alive. We now truncate
+  the PID file on `Release()` (before `LOCK_UN`) and drop the
+  post-flock alive check, fixing the spurious `ErrAlreadyRunning` that
+  `--wait` saw immediately after the previous holder released.
+- **P2:** `TestRepro_Issue20_BodyAndMetaPathDistinct` saved fixtures
+  but had no assertions, so it passed regardless of how `archive path`
+  resolved. It now actually opens the store and asserts that
+  `Resolve("42", "")` returns the body kind/SHA while
+  `Resolve("42", "metadata")` returns the metadata UUID.
+- **P2:** `TestRepro_Issue4` masked a body-download regression with
+  `t.Skip` when `BodiesFetched == 0`. The skip is now `t.Fatalf`, so
+  any future regression fails the test instead of being silenced.
 
 ## [0.2.0] - 2026-09-05
 

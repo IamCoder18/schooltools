@@ -1,7 +1,6 @@
 package archive
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -277,8 +276,11 @@ func (s *Store) Search(q SearchQuery) []SearchHit {
 		if q.WithBodies && t.CurrentBody == "" {
 			continue
 		}
-		if q.MissingBodies && t.CurrentBody != "" {
-			continue
+		if q.MissingBodies {
+			isFileCompatible := t.Type == "" || t.Type == "File"
+			if !isFileCompatible || t.CurrentBody != "" {
+				continue
+			}
 		}
 		if len(tokens) > 0 && !te.hayMatches(tokens) {
 			continue
@@ -464,10 +466,5 @@ func LoadStatus(root string) (Status, error) {
 }
 
 func lockHeldAt(root string) bool {
-	lock, err := TryLock(root)
-	if err != nil {
-		return errors.Is(err, ErrAlreadyRunning)
-	}
-	_ = lock.Release()
-	return false
+	return lockHeldByOther(root)
 }

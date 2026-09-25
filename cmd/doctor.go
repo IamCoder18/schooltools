@@ -73,14 +73,17 @@ var doctorCmd = &cobra.Command{
 		}
 		if samlExpired {
 			warnings++
-			validityRow = append(validityRow, "SAML assertion: re-login required (run `schooltools login`)")
+			validityRow = append(validityRow, "SAML assertion expired: re-login required (run `schooltools login`)")
 		}
 		if tokenExpired {
 			warnings++
-			if tokenRec != nil && tokenRec.RefreshToken != "" {
-				validityRow = append(validityRow, "Brightspace token: try `schooltools token --refresh`, otherwise re-login")
-			} else {
-				validityRow = append(validityRow, "Brightspace token: re-login required (run `schooltools login`)")
+			switch {
+			case tokenRec == nil:
+				validityRow = append(validityRow, "Brightspace token missing: re-login required (run `schooltools login`)")
+			case tokenRec.RefreshToken == "":
+				validityRow = append(validityRow, "Brightspace token expired with no RefreshToken: re-login required (run `schooltools login`)")
+			default:
+				validityRow = append(validityRow, "Brightspace token expired: try `schooltools token --refresh` (only works while the saved session is still valid)")
 			}
 		}
 		fmt.Println("\nValidity")

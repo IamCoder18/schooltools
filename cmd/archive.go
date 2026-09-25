@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -19,6 +19,33 @@ import (
 	"github.com/aarav/schooltools/internal/table"
 	"github.com/aarav/schooltools/internal/ui"
 )
+
+// tsvSanitize replaces tabs and newlines so a single field can never break
+// out of its column or its row. Used by every --plain TSV emitter.
+func tsvSanitize(s string) string {
+	s = strings.ReplaceAll(s, "\t", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	return s
+}
+
+// tsvWriteLine writes one sanitised tab-separated row terminated by a newline.
+// Returning the write error keeps lint happy without wrapping the entire
+// caller in a fmt.Fprintln chain.
+func tsvWriteLine(w io.Writer, fields ...string) error {
+	for i, f := range fields {
+		if i > 0 {
+			if _, err := io.WriteString(w, "\t"); err != nil {
+				return err
+			}
+		}
+		if _, err := io.WriteString(w, tsvSanitize(f)); err != nil {
+			return err
+		}
+	}
+	_, err := io.WriteString(w, "\n")
+	return err
+}
 
 var (
 	archiveDir       string
@@ -226,22 +253,19 @@ func runArchiveUpdate(args []string) error {
 		return err
 	}
 
+	if archiveUpdateDryRun {
+		return runArchiveUpdateDryRun(args, abs)
+	}
+
 	lock, err := acquireLock(abs, archiveUpdateWait)
 	if err != nil {
 		if errors.Is(err, archive.ErrAlreadyRunning) {
-			if archiveUpdateDryRun {
-				return fmt.Errorf("another archive run holds the lock at %s; re-run with --wait to block", archive.LockPath(abs))
-			}
 			return fmt.Errorf("another archive run holds the lock at %s; re-run with --wait to block", archive.LockPath(abs))
 		}
 		return fmt.Errorf("acquire archive lock: %w", err)
 	}
 	if lock != nil {
 		defer func() { _ = lock.Release() }()
-	}
-
-	if archiveUpdateDryRun {
-		return runArchiveUpdateDryRun(args, abs)
 	}
 
 	ens, err := session.EnsureSession(session.EnsureOptions{
@@ -323,11 +347,12 @@ func runArchiveUpdateDryRun(args []string, abs string) error {
 	scope := mergeScope(args, archiveCourses)
 	start := time.Now()
 	result, err := archive.Diff(archive.Options{
-		Root:      abs,
-		Jar:       ens.Jar,
-		Verbose:   archiveVerbose,
-		Quiet:     archiveJSON || archiveQuiet,
-		CourseIDs: scope,
+		Root:          abs,
+		Jar:           ens.Jar,
+		Verbose:       archiveVerbose,
+		Quiet:         archiveJSON || archiveQuiet,
+		CourseIDs:     scope,
+		DownloadFiles: !archiveUpdateNoBodies,
 	})
 	if err != nil {
 		return err
@@ -406,7 +431,8 @@ var archiveListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "Show the saved archive index without making any API requests",
 	Long: "Print every course known to the archive index. Without --json or --plain,\n" +
-		"output is a fitted table; use `archive status` for freshness + missing bodies.\n\n" +
+		"output is a fitted table; run bare `schooltools archive` for freshness and\n" +
+		"missing-body status.\n\n" +
 		"Examples:\n" +
 		"  schooltools archive list\n" +
 		"  schooltools archive list --json | jq '.items[].code'",
@@ -454,8 +480,9 @@ func runArchiveList() error {
 		return nil
 	}
 	if archivePlain {
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, '\t', 0)
-		fmt.Fprintln(w, "id\tcode\tname\tactive\ttopics\ttoc")
+		if err := tsvWriteLine(os.Stdout, "id", "code", "name", "active", "topics", "toc"); err != nil {
+			return err
+		}
 		for _, cid := range cids {
 			e := store.Index.Courses[cid]
 			ci := store.Courses[cid]
@@ -471,10 +498,14 @@ func runArchiveList() error {
 			if row == nil {
 				row = &archive.IndexEntry{Name: ci.Name, Code: ci.Code}
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\n",
-				cid, row.Code, row.Name, active, len(ci.Topics), toc)
+			if err := tsvWriteLine(os.Stdout,
+				cid, row.Code, row.Name, active,
+				strconv.Itoa(len(ci.Topics)), toc,
+			); err != nil {
+				return err
+			}
 		}
-		return w.Flush()
+		return nil
 	}
 	rows := make([][]string, 0, len(cids))
 	for _, cid := range cids {
@@ -601,21 +632,25 @@ func runArchiveFind(args []string) error {
 		return nil
 	}
 	if archivePlain {
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, '\t', 0)
-		fmt.Fprintln(w, "topicId\tcourse\tcode\text\thasBody\ttitle\turl")
+		if err := tsvWriteLine(os.Stdout, "topicId", "course", "code", "ext", "hasBody", "title", "url"); err != nil {
+			return err
+		}
 		for _, h := range hits {
 			ext := strings.TrimPrefix(filepath.Ext(h.URL), ".")
 			if ext == "" {
 				ext = "—"
 			}
-			hb := "—"
+			hb := "no"
 			if h.HasBody {
 				hb = "yes"
 			}
-			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				h.TopicID, h.CourseID, h.CourseCode, ext, hb, h.Title, h.URL)
+			if err := tsvWriteLine(os.Stdout,
+				strconv.Itoa(h.TopicID), h.CourseID, h.CourseCode, ext, hb, h.Title, h.URL,
+			); err != nil {
+				return err
+			}
 		}
-		return w.Flush()
+		return nil
 	}
 	if len(hits) == 0 {
 		fmt.Println("No topics matched.")
@@ -702,12 +737,16 @@ func runArchiveShow(ref string) error {
 		return nil
 	}
 	if archivePlain {
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, '\t', 0)
-		fmt.Fprintln(w, "topicId\tcourse\tcode\ttitle\ttype\tcurrent\tcurrentBody\tversions\tbodyVersions")
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\n",
-			t.TopicID, res.Ref.CourseID, res.Ref.CourseCode, t.Title, t.Type,
-			t.Current, t.CurrentBody, len(t.Versions), len(t.BodyVersions))
-		return w.Flush()
+		if err := tsvWriteLine(os.Stdout,
+			"topicId", "course", "code", "title", "type", "current", "currentBody", "versions", "bodyVersions",
+		); err != nil {
+			return err
+		}
+		return tsvWriteLine(os.Stdout,
+			strconv.Itoa(t.TopicID), res.Ref.CourseID, res.Ref.CourseCode, t.Title, t.Type,
+			t.Current, t.CurrentBody,
+			strconv.Itoa(len(t.Versions)), strconv.Itoa(len(t.BodyVersions)),
+		)
 	}
 	fmt.Printf("Archived topic %d in course %s (%s, %q)\n",
 		t.TopicID, res.Ref.CourseID, res.Ref.CourseCode, res.Ref.CourseName)
@@ -776,22 +815,27 @@ func runArchiveCat(ref string) error {
 		return err
 	}
 	if archiveCatMeta {
+		if res.Ref.Topic == nil {
+			return fmt.Errorf("--meta requires a topic ref (got a %s blob %s at %s); try: schooltools archive show %s",
+				res.Kind, res.BlobID, res.BlobPath, ref)
+		}
 		res.Kind = "metadata"
+		res.BlobID = res.Ref.Topic.Current
 		res.BlobPath = archive.MetadataBlobPath(archiveDir, res.BlobID)
 	}
-	if res.Kind == "body" && res.Ref.Topic != nil && !archiveCatMeta {
+	if res.Kind == "body" {
 		body, err := archive.LoadFileBody(archiveDir, res.BlobID)
 		if err != nil {
 			return err
 		}
 		if body == nil {
-			return fmt.Errorf("topic %d has currentBody %s but the body blob is missing on disk", res.Ref.Topic.TopicID, res.BlobID)
+			return fmt.Errorf("body blob %s not found on disk", res.BlobID)
 		}
 		_, err = os.Stdout.Write(body)
 		return err
 	}
 	if res.BlobID == "" {
-		return fmt.Errorf("topic %d has no metadata blob archived", res.TopicID)
+		return fmt.Errorf("topic has no metadata blob archived")
 	}
 	blob, err := archive.LoadBlob(archiveDir, res.BlobID)
 	if err != nil {
@@ -885,13 +929,18 @@ func runArchiveExport(refs []string) error {
 		return nil
 	}
 	if archivePlain {
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, '\t', 0)
-		fmt.Fprintln(w, "topicId\tcourse\tstatus\tsize\tdest")
-		for _, f := range res.Files {
-			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n",
-				f.TopicID, f.CourseID, f.Status, fmt.Sprintf("%d", f.Size), f.Dest)
+		if err := tsvWriteLine(os.Stdout, "topicId", "course", "status", "size", "dest"); err != nil {
+			return err
 		}
-		return w.Flush()
+		for _, f := range res.Files {
+			if err := tsvWriteLine(os.Stdout,
+				strconv.Itoa(f.TopicID), f.CourseID, f.Status,
+				strconv.FormatInt(f.Size, 10), f.Dest,
+			); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	if len(res.Files) == 0 {
 		fmt.Println("Nothing matched.")

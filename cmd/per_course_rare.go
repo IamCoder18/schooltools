@@ -44,13 +44,13 @@ type NewsItem struct {
 
 	// Fields added at LE 1.97+ — surfaced when the tenant is on a new
 	// enough version. Older versions just leave them at the zero value.
-	PinnedDate             *string `json:"PinnedDate"`
-	IsPublished            bool    `json:"IsPublished"`
-	IsStartDateShown       bool    `json:"IsStartDateShown"`
-	IsAuthorInfoShown      bool    `json:"IsAuthorInfoShown"`
-	ShowOnlyInCourseOfferings bool `json:"ShowOnlyInCourseOfferings"`
-	SortOrder              int     `json:"SortOrder"`
-	Attachments            []any   `json:"Attachments,omitempty"`
+	PinnedDate                *string `json:"PinnedDate"`
+	IsPublished               bool    `json:"IsPublished"`
+	IsStartDateShown          bool    `json:"IsStartDateShown"`
+	IsAuthorInfoShown         bool    `json:"IsAuthorInfoShown"`
+	ShowOnlyInCourseOfferings bool    `json:"ShowOnlyInCourseOfferings"`
+	SortOrder                 int     `json:"SortOrder"`
+	Attachments               []any   `json:"Attachments,omitempty"`
 }
 
 // NewsBody holds the {Html,Text} shape we get from D2L. Used by --json to
@@ -80,25 +80,28 @@ func init() {
 		Use:   "list",
 		Short: "List announcements (alias for the root command, keeps the discoverability story uniform)",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error { return runNewsList() },
+		RunE:  func(cmd *cobra.Command, args []string) error { return runNewsList() },
 	}
-	// Inherit every persistent flag from the parent `news` command so
-	// `news list --course X --since Y --json` works without re-registering.
-	list.PersistentFlags().AddFlagSet(root.PersistentFlags())
+	// Re-register every shared flag on each subcommand. AddFlagSet only
+	// wires flags the cobra command tree understands, but `--course` must
+	// bind to the same package-level variables; reusing `registerNewsFlags`
+	// does that. Cobra's `AddFlagSet` on a different command does not
+	// re-wire those bindings, which is why the prior form silently dropped
+	// `--course` on `news list`.
+	registerNewsFlags(list)
 
 	get := &cobra.Command{
 		Use: "get <newsId>", Short: "Show a single news item", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error { return runNewsGet(args[0]) },
 	}
-	get.PersistentFlags().AddFlagSet(root.PersistentFlags())
+	registerNewsFlags(get)
 	get.Flags().BoolVar(&newsCrossTry, "cross-try", true, "When --course is omitted, try every enrolled course and return the first hit")
-	get.Flags().StringVar(&newsBodyFmt, "body-format", "text", "When --json: text|html|both (flatten Body accordingly)")
 
 	att := &cobra.Command{
 		Use: "attachment <newsId> <fileId>", Short: "Download a news attachment", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error { return runNewsAttachment(args[0], args[1]) },
 	}
-	att.PersistentFlags().AddFlagSet(root.PersistentFlags())
+	registerNewsFlags(att)
 	att.Flags().BoolVar(&newsCrossTry, "cross-try", true, "When --course is omitted, try every enrolled course")
 	att.Flags().StringVar(&asgOut, "out", defaultHome(), "Output directory")
 	att.Flags().StringVar(&asgName, "name", "", "Override output filename")
@@ -108,6 +111,9 @@ func init() {
 }
 
 // registerNewsFlags is the common flag set for both `news` and `news list`.
+// Registered as regular flags (not PersistentFlags) so cobra exposes them on
+// every subcommand without us having to wire AddFlagSet, which doesn't
+// rebind the shared package variables.
 func registerNewsFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&newsCourse, "course", "", "Course OrgUnitId (omit for cross-course)")
 	cmd.Flags().StringVarP(&newsEnvFile, "env-file", "e", ".env", "Path to .env for auto-refresh")
@@ -256,6 +262,7 @@ func runNewsListCrossCourse(jar *cookiejar.Jar) error {
 		org  int
 	}
 	var all []flat
+	successes := 0
 	for _, idStr := range courseIDs {
 		orgID, _ := strconv.Atoi(idStr)
 		raw := fmt.Sprintf("%s/d2l/api/le/%s/%s/news/", ua.D2LBase, dupdata.D2LVersion(), idStr)
@@ -266,9 +273,16 @@ func runNewsListCrossCourse(jar *cookiejar.Jar) error {
 			fmt.Fprintf(os.Stderr, "[news] skipping course %s: %v\n", idStr, err)
 			continue
 		}
+		successes++
 		for _, n := range items {
+			if !withinRange(n, newsSince, newsUntil) {
+				continue
+			}
 			all = append(all, flat{news: n, org: orgID})
 		}
+	}
+	if successes == 0 {
+		return fmt.Errorf("news list: every per-course fetch failed (see stderr)")
 	}
 	sort.Slice(all, func(i, j int) bool {
 		return all[i].news.StartDate > all[j].news.StartDate
@@ -329,9 +343,15 @@ func newsListJSON(items []NewsItem, courseID string) []newsListJSONItem {
 
 func newsListJSONOne(n NewsItem, sourceCourse string) []newsListJSONItem {
 	text, html := flattenBody(n, newsBodyFmt)
+	sourceInt := n.OrgUnitId
+	if sourceCourse != "" {
+		if v, err := strconv.Atoi(sourceCourse); err == nil {
+			sourceInt = v
+		}
+	}
 	return []newsListJSONItem{{
 		Id:            n.Id.String(),
-		OrgUnitId:     n.OrgUnitId,
+		OrgUnitId:     sourceInt,
 		Title:         n.Title,
 		Body:          text,
 		BodyHtml:      html,
@@ -339,9 +359,23 @@ func newsListJSONOne(n NewsItem, sourceCourse string) []newsListJSONItem {
 		EndDate:       n.EndDate,
 		IsPinned:      n.IsPinned,
 		IsPublished:   n.IsPublished,
-		HasAttachment: n.HasAttachment,
+		HasAttachment: len(n.Attachments) > 0,
 		Source:        sourceCourse,
 	}}
+}
+
+// withinRange filters by the newsUntil bound locally, since D2L's `until`
+// parameter is not always honoured by every endpoint. ISO-8601 strings
+// compare lexicographically, so a prefix-style check is enough for the
+// `since`/`until` we accept here.
+func withinRange(n NewsItem, since, until string) bool {
+	if since != "" && n.StartDate < since {
+		return false
+	}
+	if until != "" && n.StartDate > until {
+		return false
+	}
+	return true
 }
 
 func runNewsGet(newsID string) error {
@@ -388,9 +422,13 @@ func fetchNewsItem(jar *cookiejar.Jar, courseID, newsID string) (NewsItem, error
 func printNewsItem(n NewsItem, sourceCourse string) error {
 	if newsJSON {
 		text, html := flattenBody(n, newsBodyFmt)
+		sourceInt := n.OrgUnitId
+		if v, err := strconv.Atoi(sourceCourse); err == nil {
+			sourceInt = v
+		}
 		out := map[string]any{
 			"id":            n.Id.String(),
-			"orgUnitId":     n.OrgUnitId,
+			"orgUnitId":     sourceInt,
 			"sourceCourse":  sourceCourse,
 			"title":         n.Title,
 			"body":          text,
@@ -399,7 +437,7 @@ func printNewsItem(n NewsItem, sourceCourse string) error {
 			"endDate":       n.EndDate,
 			"isPinned":      n.IsPinned,
 			"isPublished":   n.IsPublished,
-			"hasAttachment": n.HasAttachment,
+			"hasAttachment": len(n.Attachments) > 0,
 			"attachments":   n.Attachments,
 		}
 		b, _ := json.MarshalIndent(out, "", "  ")
@@ -449,14 +487,14 @@ var (
 )
 
 type GradeValue struct {
-	GradeObjectId       int     `json:"GradeObjectId"`
-	GradeObjectName     string  `json:"GradeObjectName"`
-	GradeObjectType     int     `json:"GradeObjectType"`
-	PointsNumerator     float64 `json:"PointsNumerator"`
-	PointsDenominator   float64 `json:"PointsDenominator"`
-	DisplayedGrade      string  `json:"DisplayedGrade"`
-	GradeSchemeSymbol   string  `json:"GradeSchemeSymbol"`
-	IsReleased          bool    `json:"IsReleased"`
+	GradeObjectId     int     `json:"GradeObjectId"`
+	GradeObjectName   string  `json:"GradeObjectName"`
+	GradeObjectType   int     `json:"GradeObjectType"`
+	PointsNumerator   float64 `json:"PointsNumerator"`
+	PointsDenominator float64 `json:"PointsDenominator"`
+	DisplayedGrade    string  `json:"DisplayedGrade"`
+	GradeSchemeSymbol string  `json:"GradeSchemeSymbol"`
+	IsReleased        bool    `json:"IsReleased"`
 }
 
 func init() {
@@ -605,23 +643,23 @@ var (
 )
 
 type Forum struct {
-	Id            json.Number `json:"Id"`
-	Name          string      `json:"Name"`
-	Description   any         `json:"Description"`
-	AllowAnon     bool        `json:"AllowAnonymous"`
-	IsHidden      bool        `json:"IsHidden"`
-	NumTopics     int         `json:"NumTopics"`
-	NumPosts      int         `json:"NumPosts"`
-	LastPostDate  string      `json:"LastPostDate"`
+	Id           json.Number `json:"Id"`
+	Name         string      `json:"Name"`
+	Description  any         `json:"Description"`
+	AllowAnon    bool        `json:"AllowAnonymous"`
+	IsHidden     bool        `json:"IsHidden"`
+	NumTopics    int         `json:"NumTopics"`
+	NumPosts     int         `json:"NumPosts"`
+	LastPostDate string      `json:"LastPostDate"`
 }
 
 type ForumTopic struct {
-	Id            int    `json:"Id"`
-	Name          string `json:"Name"`
-	NumPosts      int    `json:"NumPosts"`
-	LastPostDate  string `json:"LastPostDate"`
-	IsPinned      bool   `json:"IsPinned"`
-	IsLocked      bool   `json:"IsLocked"`
+	Id           int    `json:"Id"`
+	Name         string `json:"Name"`
+	NumPosts     int    `json:"NumPosts"`
+	LastPostDate string `json:"LastPostDate"`
+	IsPinned     bool   `json:"IsPinned"`
+	IsLocked     bool   `json:"IsLocked"`
 }
 
 func init() {

@@ -604,6 +604,7 @@ func Run(opts Options) (Result, error) {
 	}
 
 	idx.UpdatedAt = now()
+	idx.Version = SchemaVersion
 	if err := SaveIndex(opts.Root, idx); err != nil {
 		return result, err
 	}
@@ -879,6 +880,20 @@ func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats,
 		// skip the write.
 		if q.reason != "body-missing" && ti.CurrentBody != "" && shaHex == ti.CurrentBody {
 			s.bodiesReused++
+			continue
+		}
+		if q.reason == "body-missing" && ti.CurrentBody == shaHex {
+			// Restoring a blob whose SHA already matches the stored
+			// pointer; refresh on-disk but don't add a duplicate
+			// BodyVersions entry.
+			if _, _, sErr := SaveFileBody(opts.Root, bodyBytes); sErr != nil {
+				if opts.Verbose {
+					fmt.Fprintf(os.Stderr, "[archive]   body %d save: %v (continuing)\n", q.topicID, sErr)
+				}
+				s.bodiesErr++
+				continue
+			}
+			s.bodiesNew++
 			continue
 		}
 		if _, _, sErr := SaveFileBody(opts.Root, bodyBytes); sErr != nil {

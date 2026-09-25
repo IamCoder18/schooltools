@@ -29,13 +29,17 @@ type Options struct {
 	// file extensions for File-type topics without coupling this package
 	// to the URL/extension parsing.
 	TopicLabelHook func(content.TocTopic) string
+	// MaxDepth caps how deep the tree is rendered. 0 (default) means no
+	// limit. Depth 1 renders the top-level modules only; topics at the
+	// top level and nested modules at depth 2 are skipped.
+	MaxDepth int
 }
 
 // RenderTOC walks modules → topics → nested modules (matching
 // content.FlattenToc ordering) and returns a single multi-line tree string.
 func RenderTOC(modules []content.TocModule, opts Options) string {
 	root := treeprint.New()
-	buildInto(root, modules, opts)
+	buildInto(root, modules, opts, 1)
 	if len(modules) == 0 {
 		return ""
 	}
@@ -82,6 +86,7 @@ func buildLinesInto(parent treeprint.Tree, modules []content.TocModule) {
 // treeprint renders each line as a sequence of 4-char groups:
 //   - "│   " (link) or "    " (no-link) for each ancestor level
 //   - "├── " (mid) or "└── " (end) for the connector to this row
+//
 // followed by the value. We walk 4-rune chunks (NOT bytes — the box-drawing
 // characters are 3 bytes each in UTF-8) until we hit a connector group;
 // everything before is the prefix, everything after is the title.
@@ -116,16 +121,21 @@ func parseLines(s string) []Line {
 	return out
 }
 
-func buildInto(parent treeprint.Tree, modules []content.TocModule, opts Options) {
+func buildInto(parent treeprint.Tree, modules []content.TocModule, opts Options, depth int) {
+	if opts.MaxDepth > 0 && depth > opts.MaxDepth {
+		return
+	}
 	for _, m := range modules {
 		moduleBranch := parent.AddBranch(labelForModule(m, opts))
 
-		for _, t := range m.Topics {
-			moduleBranch.AddNode(labelForTopic(t, opts))
+		if opts.MaxDepth == 0 || depth < opts.MaxDepth {
+			for _, t := range m.Topics {
+				moduleBranch.AddNode(labelForTopic(t, opts))
+			}
 		}
 
 		if len(m.Modules) > 0 {
-			buildInto(moduleBranch, m.Modules, opts)
+			buildInto(moduleBranch, m.Modules, opts, depth+1)
 		}
 	}
 }

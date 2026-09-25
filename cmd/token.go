@@ -53,8 +53,6 @@ var tokenCmd = &cobra.Command{
 // runTokenRefresh mints a new Brightspace OAuth token using the saved session
 // cookies. Solves KNOWN_ISSUES #14: no obvious way to refresh just the bearer.
 func runTokenRefresh() error {
-	// The refresh entry point lives in internal/login and re-uses the
-	// already-authenticated jar — no .env credentials required.
 	rec, err := login.MintTokenFromSavedSession()
 	if err != nil {
 		_ = authlog.Log("token.refresh.failed", map[string]any{"error": err.Error()})
@@ -72,11 +70,16 @@ func runTokenRefresh() error {
 		"user_id":    rec.UserID,
 		"tenant_id":  rec.TenantID,
 	})
+	if tokenJSON {
+		b, _ := json.MarshalIndent(rec, "", "  ")
+		fmt.Println(string(b))
+		return nil
+	}
 	if !rec.ExpiresAt.IsZero() {
-		fmt.Fprintf(os.Stdout, "Refreshed Brightspace token (valid until %s, user %s, tenant %s) -> %s\n",
+		_, _ = fmt.Fprintf(os.Stdout, "Refreshed Brightspace token (valid until %s, user %s, tenant %s) -> %s\n",
 			rec.ExpiresAt.Format(time.RFC3339), rec.UserID, rec.TenantID, session.TokenPath())
 	} else {
-		fmt.Fprintf(os.Stdout, "Refreshed Brightspace token -> %s\n", session.TokenPath())
+		_, _ = fmt.Fprintf(os.Stdout, "Refreshed Brightspace token -> %s\n", session.TokenPath())
 	}
 	printTokenRecord(*rec, time.Now())
 	return nil

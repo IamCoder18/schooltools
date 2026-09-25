@@ -56,7 +56,11 @@ func Export(opts ExportOptions) (ExportResult, error) {
 
 	var hits []SearchHit
 	if len(opts.Refs) > 0 {
-		hits = exportResolveRefs(store, opts.Refs)
+		hs, rerr := exportResolveRefs(store, opts.Refs)
+		if rerr != nil {
+			return res, rerr
+		}
+		hits = hs
 	} else {
 		hits = store.Search(SearchQuery{
 			Ext:        opts.Ext,
@@ -74,11 +78,12 @@ func Export(opts ExportOptions) (ExportResult, error) {
 
 	used := map[string]int{}
 	for _, h := range hits {
-		if h.CurrentBody == "" {
+		source := BodyPath(opts.Root, h.CurrentBody)
+		if h.CurrentBody == "" || !fileExists(source) {
 			res.Skipped++
 			res.Files = append(res.Files, ExportFile{
 				TopicID: h.TopicID, CourseID: h.CourseID, Title: h.Title,
-				Status: "skipped-missing-body",
+				Source: source, Status: "skipped-missing-body",
 			})
 			continue
 		}
@@ -102,7 +107,6 @@ func Export(opts ExportOptions) (ExportResult, error) {
 		}
 		dest := uniqueDest(dir, base, ext, used)
 
-		source := BodyPath(opts.Root, h.CurrentBody)
 		size := fileSize(source)
 		entry := ExportFile{
 			TopicID: h.TopicID, CourseID: h.CourseID, Title: h.Title,
@@ -127,30 +131,39 @@ func Export(opts ExportOptions) (ExportResult, error) {
 	return res, nil
 }
 
-func exportResolveRefs(store *Store, refs []string) []SearchHit {
+func exportResolveRefs(store *Store, refs []string) ([]SearchHit, error) {
 	out := make([]SearchHit, 0, len(refs))
 	for _, r := range refs {
 		res, err := store.Resolve(r, "")
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("export ref %q: %w", r, err)
 		}
-		if res.Kind != "body" || res.Ref.Topic == nil {
-			continue
+		t := res.Ref.Topic
+		if t == nil {
+			return nil, fmt.Errorf("export ref %q: no topic resolves to %s", r, res.BlobID)
+		}
+		if res.BlobID == "" {
+			return nil, fmt.Errorf("export ref %q: resolved to a topic with no archived blob", r)
+		}
+		hasBody := res.Kind == "body" || t.CurrentBody != ""
+		currentBody := t.CurrentBody
+		if res.Kind == "body" {
+			currentBody = res.BlobID
 		}
 		out = append(out, SearchHit{
 			CourseID:     res.Ref.CourseID,
 			CourseName:   res.Ref.CourseName,
 			CourseCode:   res.Ref.CourseCode,
-			TopicID:      res.Ref.Topic.TopicID,
-			Title:        res.Ref.Topic.Title,
-			Type:         res.Ref.Topic.Type,
-			URL:          res.Ref.Topic.URL,
-			LastModified: res.Ref.Topic.LastModified,
-			CurrentBody:  res.BlobID,
-			HasBody:      true,
+			TopicID:      t.TopicID,
+			Title:        t.Title,
+			Type:         t.Type,
+			URL:          t.URL,
+			LastModified: t.LastModified,
+			CurrentBody:  currentBody,
+			HasBody:      hasBody,
 		})
 	}
-	return out
+	return out, nil
 }
 
 func sanitizeFilename(s string) string {
@@ -158,23 +171,28 @@ func sanitizeFilename(s string) string {
 	if s == "" {
 		return ""
 	}
-	var b strings.Builder
+	runes := make([]rune, 0, len(s))
 	for _, r := range s {
 		switch {
 		case r == '/' || r == '\\' || r == ':' || r == '*' || r == '?' || r == '"' || r == '<' || r == '>' || r == '|':
-			b.WriteRune('_')
+			runes = append(runes, '_')
 		case r < 0x20:
-			b.WriteRune('_')
+			runes = append(runes, '_')
 		default:
-			b.WriteRune(r)
+			runes = append(runes, r)
 		}
 	}
-	out := strings.TrimSpace(b.String())
+	out := strings.TrimSpace(string(runes))
 	for strings.Contains(out, "  ") {
 		out = strings.ReplaceAll(out, "  ", " ")
 	}
-	if len(out) > 120 {
-		out = out[:120]
+	if len([]rune(out)) > 120 {
+		out = string([]rune(out)[:120])
+	}
+	out = strings.TrimLeft(out, ".")
+	out = strings.TrimRight(out, ".")
+	if out == "" || strings.Trim(out, ".") == "" {
+		return ""
 	}
 	return out
 }
@@ -199,8 +217,10 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = out.Close() }()
 	_, err = io.Copy(out, in)
+	if cerr := out.Close(); cerr != nil && err == nil {
+		err = cerr
+	}
 	return err
 }
 

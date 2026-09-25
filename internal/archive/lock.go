@@ -45,6 +45,23 @@ func TryLock(root string) (*Lock, error) {
 	return lockWith(root, true)
 }
 
+// lockHeldByOther reports whether another live process is currently
+// holding the archive lock. It only inspects an existing lock file —
+// never creates one or its parent directory. Used by status queries
+// (`archive`, `archive verify`) which must report lock state without
+// side effects.
+func lockHeldByOther(root string) bool {
+	data, err := os.ReadFile(LockPath(root))
+	if err != nil {
+		return false
+	}
+	pid, perr := strconv.Atoi(strings.TrimSpace(string(data)))
+	if perr != nil || pid <= 0 || pid == os.Getpid() {
+		return false
+	}
+	return processAlive(pid)
+}
+
 func lockWith(root string, nonblock bool) (*Lock, error) {
 	path := LockPath(root)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -69,15 +86,6 @@ func lockWith(root string, nonblock bool) (*Lock, error) {
 		_ = f.Close()
 		return nil, err
 	}
-	prevPIDBytes := make([]byte, 32)
-	n, _ := f.Read(prevPIDBytes)
-	if n > 0 {
-		prevPID, perr := strconv.Atoi(strings.TrimSpace(string(prevPIDBytes[:n])))
-		if perr == nil && prevPID != os.Getpid() && processAlive(prevPID) {
-			_ = f.Close()
-			return nil, ErrAlreadyRunning
-		}
-	}
 	if err := f.Truncate(0); err != nil {
 		_ = f.Close()
 		return nil, err
@@ -98,6 +106,14 @@ func lockWith(root string, nonblock bool) (*Lock, error) {
 func (l *Lock) Release() error {
 	if l == nil || l.f == nil {
 		return nil
+	}
+	if terr := l.f.Truncate(0); terr != nil {
+		// Best-effort: a future caller will overwrite the PID anyway, but
+		// skipping the truncate leaves a stale PID in the file which can
+		// confuse the next holder if its PID happens to be alive (PID
+		// reuse). Swallow only if close also fails to keep behaviour
+		// predictable.
+		_ = terr
 	}
 	err := syscall.Flock(int(l.f.Fd()), syscall.LOCK_UN)
 	if cerr := l.f.Close(); cerr != nil && err == nil {
