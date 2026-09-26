@@ -5,6 +5,7 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"compress/zlib"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -42,6 +43,9 @@ type FetchOptions struct {
 	// browser.Headers so Sec-Fetch-Site / Referer look right. Empty for a
 	// direct navigation.
 	Referer string
+	// Context cancels the in-flight request when it expires. Nil falls
+	// back to context.Background so existing callers see no change.
+	Context context.Context
 }
 
 // Fetch performs one HTTP request without following redirects (manual mode),
@@ -72,7 +76,11 @@ func Fetch(rawURL string, jar *cookiejar.Jar, opts FetchOptions) (*http.Response
 			headers["Content-Type"] = "application/x-www-form-urlencoded"
 		}
 	}
-	req, err := http.NewRequest(method, rawURL, body)
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, body)
 	if err != nil {
 		return nil, err
 	}
