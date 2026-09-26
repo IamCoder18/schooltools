@@ -208,6 +208,9 @@ func fetchManageCoursesPage(rawURL string, jar *cookiejar.Jar) ([]string, string
 	if !resp.Paging.HasMoreItems {
 		return out, "", nil
 	}
+	if resp.Paging.Bookmark == "" {
+		return nil, "", fmt.Errorf("manageCourses: HasMoreItems=true but no bookmark in response")
+	}
 	return out, resp.Paging.Bookmark, nil
 }
 

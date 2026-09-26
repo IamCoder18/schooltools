@@ -77,6 +77,7 @@ func Export(opts ExportOptions) (ExportResult, error) {
 	})
 
 	used := map[string]int{}
+	reserved := map[string]struct{}{}
 	for _, h := range hits {
 		source := BodyPath(opts.Root, h.CurrentBody)
 		if h.CurrentBody == "" || !fileExists(source) {
@@ -105,7 +106,10 @@ func Export(opts ExportOptions) (ExportResult, error) {
 			}
 			dir = filepath.Join(opts.Out, sanitizeFilename(code))
 		}
-		dest := uniqueDest(dir, base, ext, used)
+		dest, err := uniqueDest(dir, base, ext, used, reserved)
+		if err != nil {
+			return res, err
+		}
 
 		size := fileSize(source)
 		entry := ExportFile{
@@ -197,31 +201,39 @@ func sanitizeFilename(s string) string {
 	return out
 }
 
-func uniqueDest(dir, base, ext string, used map[string]int) string {
+// uniqueDest picks an unused destination path for an exported file.
+// `used` records the next suffix index to try for each "<base>.<ext>"
+// key (one entry per unsuffixed base). `reserved` records every
+// destination path that has already been returned by a previous call
+// in the same export run, including suffixed candidates. Both a
+// `reserved` hit and a real filesystem hit bump the suffix; an
+// unexpected Stat error (anything other than NotExist) is returned so
+// the caller can fail loudly instead of silently trying the next
+// suffix forever.
+func uniqueDest(dir, base, ext string, used map[string]int, reserved map[string]struct{}) (string, error) {
 	key := filepath.Join(dir, base+"."+ext)
-	if n, ok := used[key]; ok {
-		n++
-		for {
-			candidate := filepath.Join(dir, fmt.Sprintf("%s (%d).%s", base, n, ext))
-			if _, statErr := os.Stat(candidate); os.IsNotExist(statErr) {
-				used[key] = n
-				return candidate
-			}
-			n++
+	nextSuf := used[key] + 1
+	for n := nextSuf; ; n++ {
+		var candidate string
+		if n == 1 {
+			candidate = key
+		} else {
+			candidate = filepath.Join(dir, fmt.Sprintf("%s (%d).%s", base, n, ext))
 		}
-	}
-	used[key] = 1
-	if _, statErr := os.Stat(key); os.IsNotExist(statErr) {
-		return key
-	}
-	n := 2
-	for {
-		candidate := filepath.Join(dir, fmt.Sprintf("%s (%d).%s", base, n, ext))
-		if _, statErr := os.Stat(candidate); os.IsNotExist(statErr) {
+		if _, taken := reserved[candidate]; taken {
+			continue
+		}
+		_, statErr := os.Stat(candidate)
+		switch {
+		case statErr == nil:
+			// Exists on disk — try the next suffix.
+		case os.IsNotExist(statErr):
 			used[key] = n
-			return candidate
+			reserved[candidate] = struct{}{}
+			return candidate, nil
+		default:
+			return "", fmt.Errorf("export: stat %s: %w", candidate, statErr)
 		}
-		n++
 	}
 }
 

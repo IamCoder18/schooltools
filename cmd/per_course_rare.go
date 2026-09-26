@@ -5,6 +5,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http/cookiejar"
 	"os"
 	"sort"
@@ -234,6 +235,7 @@ func htmlToText(s string) string {
 		`&nbsp;`, " ",
 	)
 	out := r.Replace(b.String())
+	out = html.UnescapeString(out)
 	out = collapseSpaces(out)
 	return strings.TrimSpace(out)
 }

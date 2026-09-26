@@ -289,16 +289,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   compare. `runNewsList` now validates both bounds up front and
   returns an error when the value cannot be parsed.
 - **P2:** `archive export` `uniqueDest` only checked the in-memory
-  `used` map; if the suffixed candidate already existed on disk
-  from an earlier run, `copyFile` would fail with `O_EXCL` after
-  other files had been written. `uniqueDest` now stat-checks each
-  candidate against the filesystem until it finds an unused name.
+  `used` map; if the suffixed candidate had already been returned
+  earlier in the same run (e.g., a dry run picked `report (2).pdf`
+  and then a topic titled `Report (2)` asked for the same path),
+  the second call returned a duplicate. `uniqueDest` now keeps a
+  separate `reserved` set of every destination it has handed out
+  (including suffixed candidates) and refuses to repeat any of them.
+  Unexpected `os.Stat` errors (anything other than NotExist) are
+  returned to the caller so a transient permission problem can't
+  silently loop the suffix counter.
 - **P2:** `CourseOrgIDsCSV` walked bookmark pagination by reading
   the bookmark off the previous URL, but the manageCourses widget
   doesn't echo it there — the loop requested the first page 25 times
   and then gave up. The walker now uses the `PagingInfo.Bookmark`
-  returned by each response and rejects an unchanged bookmark so a
-  loop is caught immediately.
+  returned by each response, rejects an unchanged bookmark so a
+  loop is caught immediately, and rejects an empty bookmark when
+  `HasMoreItems` is still true so a malformed pagination response
+  can't silently truncate the result set.
+- **P2:** `news list` HTML-only bodies now also run through
+  `html.UnescapeString`, so the default text body decodes common
+  named and numeric entities (`&`, `<`, `'`, `'`, …)
+  rather than leaving them as raw HTML escape sequences.
 
 ## [0.2.0] - 2026-09-05
 
