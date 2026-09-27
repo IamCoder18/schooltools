@@ -340,3 +340,55 @@ user pulling real files out of D2L are:
   trust `archive list`
 - **#11 / #12** — stable JSON shape + file extensions in tree view
 - **#13 / #14** — honest session/token status reporting
+
+---
+
+## Resolved by the archive-UX redesign
+
+The following issues from the original list are closed by this release:
+
+- **#4 — `archive read <topicId>` returns metadata, not the file body.**
+  Closed by `archive cat <ref>` (File topics emit raw bytes by default;
+  pass `--meta` to force the metadata blob).
+- **#5 — `archive path <topicId>` resolves to the metadata `.json`,
+  not the body `.bin`.** Closed by the same `Resolve` helper that
+  powers `cat`: a topicId for a File topic with an archived body
+  returns the body path.
+- **#6 — `archive topic <id>` requires `--course` even though the
+  topic is uniquely indexed.** Closed by `archive show <ref>` which
+  accepts a topicId alone (via global reverse lookup) and resolves the
+  owning course automatically.
+- **#17 — `archive` body-tracking table column is misleading.** Closed
+  by removing the raw `●`/`○` glyphs in favour of `yes`/`—` and the
+  `--with-bodies` / `--missing-bodies` filters on `archive find`.
+- **#18 — No machine-readable way to enumerate file topics across
+  courses.** Closed by `archive find --type File [--ext …] [--json]
+  [--plain]`.
+- **#20 — `archive path <topicId>` should distinguish metadata vs body
+  paths.** Closed by `--kind metadata|body` on `archive path` and by
+  the new `archive cat` which separates the two unambiguously.
+
+## New issues uncovered by the redesign
+
+These were not on the original list and are filed here for transparency:
+
+- **`prune --dry-run` is destructive.** The old top-level
+  `prune --dry-run` (now `archive prune` with no `--delete`) called
+  the real `archive.Prune` and deleted blobs despite being documented
+  as a preview. `PrunePlan` (read-only) and `Prune` (destructive,
+  gated by `--delete`) now separate the two.
+- **`prune` deleted every body blob.** `collectLiveUUIDs` only collected
+  metadata UUIDs, so every `blobs/<sha>.bin` was deleted by any prune
+  run — including live `CurrentBody` references. `Prune` now keeps
+  body blobs referenced by any topic's current body pointer.
+- **`prune` left dangling version pointers.** `Versions` / `BodyVersions`
+  entries pointing at removed blobs were left in the index. `Prune`
+  rewrites indexes in the same pass.
+- **`Diff` wrote the index despite "no writes".** `archive --diff` /
+  `update --dry-run` no longer calls `SaveIndex` (no index, no
+  directory, no TOC persistence — the dry run is a pure in-memory
+  preview).
+- **Missing bodies never filled.** The body-download gate ran only for
+  topics whose metadata changed; bodies that failed to download (or
+  were skipped) stayed missing. `archive update` now retries any File
+  topic whose body is missing on disk.
