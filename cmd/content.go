@@ -1,12 +1,18 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http/cookiejar"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -26,6 +32,7 @@ var (
 	contentDepth       int
 	contentArchive     bool
 	contentArchiveDir  string
+	contentTimeout     time.Duration
 )
 
 // contentCmd is the new (0.2.0) flag-based form: `content --course <id>`.
@@ -84,6 +91,7 @@ func init() {
 	contentCmd.Flags().IntVar(&contentDepth, "depth", 0, "Limit tree depth (0 = unlimited)")
 	contentCmd.Flags().BoolVar(&contentArchive, "archive", false, "Read from the on-disk archive (set by `archive`) instead of the live API")
 	contentCmd.Flags().StringVar(&contentArchiveDir, "archive-dir", archive.DefaultRoot(), "Archive root directory (default: ~/.config/schooltools/archive)")
+	contentCmd.Flags().DurationVar(&contentTimeout, "timeout", 60*time.Second, "Abort the live TOC fetch after this duration; --archive is unaffected")
 
 	contentGetCmd.Flags().BoolVar(&contentJSON, "json", false, "Emit raw JSON instead of pretty-printed")
 	contentGetCmd.Flags().BoolVar(&contentArchive, "archive", false, "Read from the on-disk archive instead of the live API")
@@ -115,33 +123,45 @@ func runContentList(courseID string) error {
 	if err != nil {
 		return err
 	}
-	toc, err := content.FetchToc(courseID, ens.Jar)
+
+	toc, err := fetchTocWithTimeout(ens.Jar, courseID, contentTimeout)
 	if err != nil {
 		if ua.IsLoginURL(err.Error()) || isLoginError(err) {
 			_ = session.Clear()
 			return fmt.Errorf("session expired (landed on login page); run 'schooltools login' again")
 		}
+		if isTimeoutErr(err) {
+			fmt.Fprintf(os.Stderr, "note: TOC fetch did not complete in %s; re-run with `schooltools content --course %s --archive` to read from the on-disk archive.\n",
+				contentTimeout, courseID)
+		}
 		return err
 	}
 	flatRows := content.FlattenToc(toc.Modules)
 
+	if contentDepth < 0 {
+		return fmt.Errorf("--depth must be >= 0 (got %d)", contentDepth)
+	}
 	if contentDepth > 0 {
 		flatRows = depthFilter(flatRows, contentDepth)
 	}
-
 	if contentJSON && contentTree {
 		return fmt.Errorf("--tree and --json are mutually exclusive")
 	}
 	if contentJSON {
-		out, _ := json.MarshalIndent(flatRows, "", "  ")
-		fmt.Println(string(out))
+		out := map[string]any{
+			"courseId": courseID,
+			"count":    len(flatRows),
+			"items":    flatRows,
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(b))
 		return nil
 	}
 
 	treeRows := applyTreePrefixes(flatRows, toc.Modules)
 
 	if contentTree {
-		printTree(toc.Modules, treeRows)
+		printTree(toc.Modules, treeRows, contentDepth)
 		return nil
 	}
 	printHuman(treeRows)
@@ -197,6 +217,28 @@ func isLoginError(err error) bool {
 	return ua.IsLoginURL(err.Error())
 }
 
+// fetchTocWithTimeout races the live TOC fetch against a deadline. On
+// timeout the deadline propagates into the HTTP request via the
+// context, so the in-flight call returns promptly with the timeout
+// error instead of leaking the goroutine until the server replies.
+// The archive path is unaffected — users get sub-second responses
+// from `content --archive`.
+func fetchTocWithTimeout(jar *cookiejar.Jar, courseID string, d time.Duration) (content.TocResponse, error) {
+	if d <= 0 {
+		return content.FetchToc(courseID, jar)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	return content.FetchTocWithContext(ctx, courseID, jar)
+}
+
+func isTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "timed out")
+}
+
 // applyTreePrefixes asks internal/tree (which delegates to github.com/xlab/
 // treeprint) for the per-line Unicode tree connectors, then zips them onto
 // flatRows by index. tree.Lines walks the same DFS order as FlattenToc, so
@@ -214,7 +256,7 @@ func applyTreePrefixes(flatRows []content.FlatRow, modules []content.TocModule) 
 	return out
 }
 
-func printTree(modules []content.TocModule, rows []content.FlatRow) {
+func printTree(modules []content.TocModule, rows []content.FlatRow, depth int) {
 	if len(modules) == 0 {
 		fmt.Println("No content found for this course.")
 		return
@@ -230,14 +272,74 @@ func printTree(modules []content.TocModule, rows []content.FlatRow) {
 	fmt.Printf("%d items — %d module%s, %d topic%s\n",
 		len(rows), modulesN, plural(modulesN), topicsN, plural(topicsN))
 
-	out := tree.RenderTOC(modules, tree.Options{
+	pruned := modules
+	if depth > 0 {
+		pruned = pruneModulesByDepth(modules, depth)
+	}
+	out := tree.RenderTOC(pruned, tree.Options{
 		ShowKind:  true,
 		ShowType:  true,
 		ShowDate:  true,
 		ShowFlags: true,
+		MaxDepth:  depth,
+		TopicLabelHook: func(t content.TocTopic) string {
+			if t.TypeIdentifier != "File" && topicTypeNumber(t) != 1 {
+				return ""
+			}
+			if t.Url == nil {
+				return ""
+			}
+			u := *t.Url
+			parsed, err := url.Parse(u)
+			if err != nil {
+				return ""
+			}
+			ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(parsed.Path)), ".")
+			if ext == "" || strings.ContainsAny(ext, "/\\") || len(ext) > 8 {
+				return ""
+			}
+			return ext
+		},
 	})
 	fmt.Print(out)
+	if depth > 0 {
+		fmt.Printf("\n(limited to depth %d)\n", depth)
+	}
 }
+
+// pruneModulesByDepth returns modules trimmed so no descendant is below
+// `max`. Modules whose own depth equals max still render (they appear in
+// the table as headers) but their child topics are dropped.
+func pruneModulesByDepth(modules []content.TocModule, max int) []content.TocModule {
+	if max <= 0 {
+		return modules
+	}
+	var walk func(m content.TocModule, depth int) content.TocModule
+	walk = func(m content.TocModule, depth int) content.TocModule {
+		if depth >= max {
+			return content.TocModule{ModuleId: m.ModuleId, Title: m.Title, LastModifiedDate: m.LastModifiedDate, IsHidden: m.IsHidden, IsLocked: m.IsLocked}
+		}
+		out := m
+		out.Modules = nil
+		for _, c := range m.Modules {
+			if cm := walk(c, depth+1); cm.ModuleId != 0 || cm.Title != "" {
+				out.Modules = append(out.Modules, cm)
+			}
+		}
+		return out
+	}
+	out := make([]content.TocModule, 0, len(modules))
+	for _, m := range modules {
+		if cm := walk(m, 1); cm.ModuleId != 0 || cm.Title != "" {
+			out = append(out, cm)
+		}
+	}
+	return out
+}
+
+// topicTypeNumber mirrors the TopicType discriminator used by the TOC.
+// 2 = Link, 1 = File (default when the type identifier is missing).
+func topicTypeNumber(t content.TocTopic) int { return t.TopicType }
 
 func printHuman(rows []content.FlatRow) {
 	if len(rows) == 0 {
@@ -336,13 +438,13 @@ func runContentListFromArchive(courseID string) error {
 	}
 
 	type flatRow struct {
-		Id        int
-		Title     string
-		URL       string
-		Type      string
-		Modified  string
-		UUID      string
-		Versions  int
+		Id       int
+		Title    string
+		URL      string
+		Type     string
+		Modified string
+		UUID     string
+		Versions int
 	}
 	var rows []flatRow
 	for id, t := range idx.Topics {
@@ -382,20 +484,29 @@ func runContentListFromArchive(courseID string) error {
 	}
 
 	if contentJSON {
-		out := make([]map[string]any, len(rows))
+		items := make([]map[string]any, len(rows))
 		for i, r := range rows {
-			out[i] = map[string]any{
-				"topicId":     r.Id,
-				"title":       r.Title,
-				"type":        r.Type,
-				"url":         r.URL,
+			items[i] = map[string]any{
+				"topicId":      r.Id,
+				"title":        r.Title,
+				"type":         r.Type,
+				"url":          r.URL,
 				"lastModified": r.Modified,
-				"current":     r.UUID,
-				"versions":    r.Versions,
-				"courseId":    idx.CourseID,
-				"courseName":  idx.Name,
-				"courseCode":  idx.Code,
+				"current":      r.UUID,
+				"versions":     r.Versions,
+				"courseId":     idx.CourseID,
+				"courseName":   idx.Name,
+				"courseCode":   idx.Code,
 			}
+		}
+		out := map[string]any{
+			"courseId":   courseID,
+			"source":     "archive",
+			"count":      len(rows),
+			"courseName": idx.Name,
+			"courseCode": idx.Code,
+			"indexedAt":  idx.UpdatedAt.UTC().Format(time.RFC3339),
+			"items":      items,
 		}
 		b, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Println(string(b))

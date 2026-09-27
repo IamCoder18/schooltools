@@ -29,6 +29,12 @@ func LockPath(root string) string {
 	return filepath.Join(root, "archive.lock")
 }
 
+// WaitLock blocks until the archive lock can be acquired. Used by --wait.
+// Returns the lock or an I/O error (never ErrAlreadyRunning).
+func WaitLock(root string) (*Lock, error) {
+	return lockWith(root, false)
+}
+
 // TryLock attempts to claim the archive lock. Returns:
 //   - (*Lock, nil) on success — caller MUST defer Release
 //   - (nil, ErrAlreadyRunning) when another live process holds it
@@ -36,6 +42,27 @@ func LockPath(root string) string {
 //
 // Stale locks (file exists but PID is dead) are silently claimed.
 func TryLock(root string) (*Lock, error) {
+	return lockWith(root, true)
+}
+
+// lockHeldByOther reports whether another live process is currently
+// holding the archive lock. It only inspects an existing lock file —
+// never creates one or its parent directory. Used by status queries
+// (`archive`, `archive verify`) which must report lock state without
+// side effects.
+func lockHeldByOther(root string) bool {
+	data, err := os.ReadFile(LockPath(root))
+	if err != nil {
+		return false
+	}
+	pid, perr := strconv.Atoi(strings.TrimSpace(string(data)))
+	if perr != nil || pid <= 0 || pid == os.Getpid() {
+		return false
+	}
+	return processAlive(pid)
+}
+
+func lockWith(root string, nonblock bool) (*Lock, error) {
 	path := LockPath(root)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
@@ -44,28 +71,20 @@ func TryLock(root string) (*Lock, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	flags := syscall.LOCK_EX
+	if nonblock {
+		flags |= syscall.LOCK_NB
+	}
+	if err := syscall.Flock(int(f.Fd()), flags); err != nil {
 		_ = f.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
+		if nonblock && errors.Is(err, syscall.EWOULDBLOCK) {
 			return nil, ErrAlreadyRunning
 		}
 		return nil, err
 	}
-	// Truncate + write our PID. Reading and re-checking the previous PID
-	// before truncating gives us "stale lock detection" for the case where
-	// the previous process crashed without releasing the flock.
 	if _, err := f.Seek(0, 0); err != nil {
 		_ = f.Close()
 		return nil, err
-	}
-	prevPIDBytes := make([]byte, 32)
-	n, _ := f.Read(prevPIDBytes)
-	if n > 0 {
-		prevPID, perr := strconv.Atoi(strings.TrimSpace(string(prevPIDBytes[:n])))
-		if perr == nil && prevPID != os.Getpid() && processAlive(prevPID) {
-			_ = f.Close()
-			return nil, ErrAlreadyRunning
-		}
 	}
 	if err := f.Truncate(0); err != nil {
 		_ = f.Close()
@@ -87,6 +106,14 @@ func TryLock(root string) (*Lock, error) {
 func (l *Lock) Release() error {
 	if l == nil || l.f == nil {
 		return nil
+	}
+	if terr := l.f.Truncate(0); terr != nil {
+		// Best-effort: a future caller will overwrite the PID anyway, but
+		// skipping the truncate leaves a stale PID in the file which can
+		// confuse the next holder if its PID happens to be alive (PID
+		// reuse). Swallow only if close also fails to keep behaviour
+		// predictable.
+		_ = terr
 	}
 	err := syscall.Flock(int(l.f.Fd()), syscall.LOCK_UN)
 	if cerr := l.f.Close(); cerr != nil && err == nil {

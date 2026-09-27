@@ -5,10 +5,13 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"html"
+	"net/http/cookiejar"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -20,11 +23,14 @@ import (
 // ───────────────────────────── news ─────────────────────────────
 
 var (
-	newsCourse  string
-	newsEnvFile string
-	newsAutoRef bool
-	newsJSON    bool
-	newsSince   string
+	newsCourse   string
+	newsEnvFile  string
+	newsAutoRef  bool
+	newsJSON     bool
+	newsSince    string
+	newsUntil    string
+	newsBodyFmt  string
+	newsCrossTry bool
 )
 
 type NewsItem struct {
@@ -40,13 +46,20 @@ type NewsItem struct {
 
 	// Fields added at LE 1.97+ — surfaced when the tenant is on a new
 	// enough version. Older versions just leave them at the zero value.
-	PinnedDate             *string `json:"PinnedDate"`
-	IsPublished            bool    `json:"IsPublished"`
-	IsStartDateShown       bool    `json:"IsStartDateShown"`
-	IsAuthorInfoShown      bool    `json:"IsAuthorInfoShown"`
-	ShowOnlyInCourseOfferings bool `json:"ShowOnlyInCourseOfferings"`
-	SortOrder              int     `json:"SortOrder"`
-	Attachments            []any   `json:"Attachments,omitempty"`
+	PinnedDate                *string `json:"PinnedDate"`
+	IsPublished               bool    `json:"IsPublished"`
+	IsStartDateShown          bool    `json:"IsStartDateShown"`
+	IsAuthorInfoShown         bool    `json:"IsAuthorInfoShown"`
+	ShowOnlyInCourseOfferings bool    `json:"ShowOnlyInCourseOfferings"`
+	SortOrder                 int     `json:"SortOrder"`
+	Attachments               []any   `json:"Attachments,omitempty"`
+}
+
+// NewsBody holds the {Html,Text} shape we get from D2L. Used by --json to
+// flatten to a string via --body-format text|html|both.
+type NewsBody struct {
+	Html string `json:"Html"`
+	Text string `json:"Text"`
 }
 
 func init() {
@@ -57,37 +70,60 @@ func init() {
 			"command exists for completeness and for archival workflows.\n\n" +
 			"`news --course <id>` lists per-course news. `news get <newsId>`\n" +
 			"shows one item. `news attachment <newsId> <fileId>` downloads an\n" +
-			"attachment. `news` with no `--course` returns cross-course news.",
+			"attachment. `news list [--course ID] [--since …] [--until …]` is\n" +
+			"the alias for the root command with discoverable subcommands. `news`\n" +
+			"with no `--course` returns cross-course news (aggregated per-course).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error { return runNewsList() },
 	}
-	root.Flags().StringVar(&newsCourse, "course", "", "Course OrgUnitId to scope to (omit for cross-course)")
-	root.Flags().StringVarP(&newsEnvFile, "env-file", "e", ".env", "Path to .env for auto-refresh")
-	root.Flags().BoolVar(&newsAutoRef, "auto-refresh", false, "Re-run 'login' if the session is expired")
-	root.Flags().BoolVar(&newsJSON, "json", false, "Emit raw JSON instead of a table")
-	root.Flags().StringVar(&newsSince, "since", "", "ISO 8601 lower bound for cross-course news")
+	registerNewsFlags(root)
+
+	list := &cobra.Command{
+		Use:   "list",
+		Short: "List announcements (alias for the root command, keeps the discoverability story uniform)",
+		Args:  cobra.NoArgs,
+		RunE:  func(cmd *cobra.Command, args []string) error { return runNewsList() },
+	}
+	// Re-register every shared flag on each subcommand. AddFlagSet only
+	// wires flags the cobra command tree understands, but `--course` must
+	// bind to the same package-level variables; reusing `registerNewsFlags`
+	// does that. Cobra's `AddFlagSet` on a different command does not
+	// re-wire those bindings, which is why the prior form silently dropped
+	// `--course` on `news list`.
+	registerNewsFlags(list)
 
 	get := &cobra.Command{
 		Use: "get <newsId>", Short: "Show a single news item", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error { return runNewsGet(args[0]) },
 	}
-	get.Flags().StringVar(&newsCourse, "course", "", "Course OrgUnitId (required)")
-	get.Flags().BoolVar(&newsJSON, "json", false, "Emit raw JSON")
-	get.Flags().StringVarP(&newsEnvFile, "env-file", "e", ".env", "Path to .env for auto-refresh")
-	get.Flags().BoolVar(&newsAutoRef, "auto-refresh", false, "Re-run 'login' if the session is expired")
+	registerNewsFlags(get)
+	get.Flags().BoolVar(&newsCrossTry, "cross-try", true, "When --course is omitted, try every enrolled course and return the first hit")
 
 	att := &cobra.Command{
 		Use: "attachment <newsId> <fileId>", Short: "Download a news attachment", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error { return runNewsAttachment(args[0], args[1]) },
 	}
-	att.Flags().StringVar(&newsCourse, "course", "", "Course OrgUnitId (required)")
+	registerNewsFlags(att)
+	att.Flags().BoolVar(&newsCrossTry, "cross-try", true, "When --course is omitted, try every enrolled course")
 	att.Flags().StringVar(&asgOut, "out", defaultHome(), "Output directory")
 	att.Flags().StringVar(&asgName, "name", "", "Override output filename")
-	att.Flags().StringVarP(&newsEnvFile, "env-file", "e", ".env", "Path to .env for auto-refresh")
-	att.Flags().BoolVar(&newsAutoRef, "auto-refresh", false, "Re-run 'login' if the session is expired")
 
-	root.AddCommand(get, att)
+	root.AddCommand(list, get, att)
 	rootCmd.AddCommand(root)
+}
+
+// registerNewsFlags is the common flag set for both `news` and `news list`.
+// Registered as regular flags (not PersistentFlags) so cobra exposes them on
+// every subcommand without us having to wire AddFlagSet, which doesn't
+// rebind the shared package variables.
+func registerNewsFlags(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&newsCourse, "course", "", "Course OrgUnitId (omit for cross-course)")
+	cmd.Flags().StringVarP(&newsEnvFile, "env-file", "e", ".env", "Path to .env for auto-refresh")
+	cmd.Flags().BoolVar(&newsAutoRef, "auto-refresh", false, "Re-run 'login' if the session is expired")
+	cmd.Flags().BoolVar(&newsJSON, "json", false, "Emit a JSON envelope instead of a table")
+	cmd.Flags().StringVar(&newsSince, "since", "", "ISO 8601 lower bound for cross-course news")
+	cmd.Flags().StringVar(&newsUntil, "until", "", "ISO 8601 upper bound for cross-course news")
+	cmd.Flags().StringVar(&newsBodyFmt, "body-format", "text", "When --json: text|html|both (flatten Body accordingly)")
 }
 
 func newsSession() (session.EnsureResult, error) {
@@ -99,98 +135,159 @@ func newsSession() (session.EnsureResult, error) {
 	})
 }
 
+func newsCourseIDs(jar *cookiejar.Jar) ([]string, error) {
+	csv, err := dupdata.CourseOrgIDsCSV(jar)
+	if err != nil {
+		return nil, err
+	}
+	parts := strings.Split(csv, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// newsListJSONItem is the --json shape: an envelope-friendly row with Body
+// flattened to a single string. source is the OrgUnitId the item came from.
+type newsListJSONItem struct {
+	Id            string `json:"id"`
+	OrgUnitId     int    `json:"orgUnitId"`
+	Title         string `json:"title"`
+	Body          string `json:"body,omitempty"`
+	BodyHtml      string `json:"bodyHtml,omitempty"`
+	StartDate     string `json:"startDate"`
+	EndDate       string `json:"endDate,omitempty"`
+	IsPinned      bool   `json:"isPinned"`
+	IsPublished   bool   `json:"isPublished"`
+	HasAttachment bool   `json:"hasAttachment"`
+	Source        string `json:"sourceCourseId,omitempty"`
+}
+
+func flattenBody(n NewsItem, format string) (string, string) {
+	if n.Body == nil {
+		return "", ""
+	}
+	var b NewsBody
+	switch v := n.Body.(type) {
+	case NewsBody:
+		b = v
+	case map[string]any:
+		if h, ok := v["Html"].(string); ok {
+			b.Html = h
+		}
+		if t, ok := v["Text"].(string); ok {
+			b.Text = t
+		}
+	default:
+		// Fallback: serialise the raw shape.
+		raw, _ := json.Marshal(n.Body)
+		return "", string(raw)
+	}
+	switch strings.ToLower(format) {
+	case "html":
+		return "", b.Html
+	case "both":
+		return b.Text, b.Html
+	default:
+		if b.Text != "" {
+			return b.Text, ""
+		}
+		return htmlToText(b.Html), b.Html
+	}
+}
+
+// htmlToText is a deliberately conservative HTML→text conversion. We
+// only drop tags, collapse runs of whitespace, and decode the handful
+// of entities that commonly appear in D2L news bodies (& < >
+// " ' &nbsp;). Anything richer (tables, images, embedded
+// styles) is left as-is in the HTML, which the caller can request
+// explicitly with --body-format html.
+func htmlToText(s string) string {
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	inTag := false
+	for _, r := range s {
+		switch {
+		case r == '<':
+			inTag = true
+		case r == '>':
+			inTag = false
+			b.WriteRune(' ')
+		case inTag:
+			// skip tag contents
+		default:
+			b.WriteRune(r)
+		}
+	}
+	r := strings.NewReplacer(
+		`&`, "&",
+		`<`, "<",
+		`>`, ">",
+		"\"", `"`,
+		`&apos;`, "'",
+		`&nbsp;`, " ",
+	)
+	out := r.Replace(b.String())
+	out = html.UnescapeString(out)
+	out = collapseSpaces(out)
+	return strings.TrimSpace(out)
+}
+
+func collapseSpaces(s string) string {
+	var b strings.Builder
+	prevSpace := false
+	for _, r := range s {
+		if r == ' ' || r == '\n' || r == '\t' || r == '\r' {
+			if !prevSpace {
+				b.WriteRune(' ')
+				prevSpace = true
+			}
+			continue
+		}
+		b.WriteRune(r)
+		prevSpace = false
+	}
+	return b.String()
+}
+
 func runNewsList() error {
+	if err := validateNewsBounds(); err != nil {
+		return err
+	}
 	ens, err := newsSession()
 	if err != nil {
 		return err
 	}
 	if newsCourse == "" {
-		// No cross-course aggregator endpoint is available on CBE (the
-		// `/users/me/news/` route returns 403). Aggregate by hitting the
-		// per-course news endpoint once per enrolled course and merging
-		// the results, sorted newest-first.
-		csv, err := dupdata.CourseOrgIDsCSV(ens.Jar)
-		if err != nil {
-			return err
-		}
-		courseIDs := strings.Split(csv, ",")
-		type flat struct {
-			news NewsItem
-			org  int
-		}
-		var all []flat
-		for _, idStr := range courseIDs {
-			idStr = strings.TrimSpace(idStr)
-			orgID, _ := strconv.Atoi(idStr)
-			raw := fmt.Sprintf("%s/d2l/api/le/%s/%s/news/", ua.D2LBase, dupdata.D2LVersion(), idStr)
-			if newsSince != "" {
-				var err error
-				raw, err = dupdata.AppendQuery(raw, "since", newsSince)
-				if err != nil {
-					return err
-				}
-			}
-			items, err := dupdata.FetchJSONList[NewsItem](raw, ens.Jar)
-			if err != nil {
-				// Per-course failures shouldn't kill the whole aggregate —
-				// skip and continue. log to stderr only with -v.
-				fmt.Fprintf(os.Stderr, "[news] skipping course %s: %v\n", idStr, err)
-				continue
-			}
-			for _, n := range items {
-				all = append(all, flat{news: n, org: orgID})
-			}
-		}
-		// Sort newest first by StartDate (desc).
-		sort.Slice(all, func(i, j int) bool {
-			return all[i].news.StartDate > all[j].news.StartDate
-		})
-		if newsJSON {
-			type outItem struct {
-				NewsItem
-				OrgUnitIdHint int `json:"OrgUnitId"`
-			}
-			out := make([]outItem, 0, len(all))
-			for _, f := range all {
-				out = append(out, outItem{NewsItem: f.news, OrgUnitIdHint: f.org})
-			}
-			b, _ := json.MarshalIndent(out, "", "  ")
-			fmt.Println(string(b))
-			return nil
-		}
-		if len(all) == 0 {
-			fmt.Println("No announcements across any of your courses.")
-			return nil
-		}
-		fmt.Printf("%d announcement%s across %d course%s\n",
-			len(all), plural(len(all)), len(courseIDs), plural(len(courseIDs)))
-		for _, f := range all {
-			when := f.news.StartDate
-			if len(when) > 16 {
-				when = when[:16]
-			}
-			pin := ""
-			if f.news.IsPinned {
-				pin = "[pinned] "
-			}
-			fmt.Printf("  %s\t%s\torg=%d\t%s%s\n", f.news.Id.String(), when, f.org, pin, truncate(f.news.Title, 80))
-		}
-		return nil
+		return runNewsListCrossCourse(ens.Jar)
 	}
-	raw := fmt.Sprintf("%s/d2l/api/le/%s/%s/news/", ua.D2LBase, dupdata.D2LVersion(), newsCourse)
-	if newsSince != "" {
-		var err error
-		raw, err = dupdata.AppendQuery(raw, "since", newsSince)
-		if err != nil {
-			return err
-		}
-	}
-	items, err := dupdata.FetchJSONList[NewsItem](raw, ens.Jar)
+	return runNewsListOneCourse(ens.Jar, newsCourse)
+}
+
+func runNewsListOneCourse(jar *cookiejar.Jar, courseID string) error {
+	raw := fmt.Sprintf("%s/d2l/api/le/%s/%s/news/", ua.D2LBase, dupdata.D2LVersion(), courseID)
+	raw, _ = dupdata.AppendQuery(raw, "since", newsSince)
+	raw, _ = dupdata.AppendQuery(raw, "until", newsUntil)
+	items, err := dupdata.FetchJSONList[NewsItem](raw, jar)
 	if err != nil {
 		return err
 	}
 	if newsJSON {
-		b, _ := json.MarshalIndent(items, "", "  ")
+		out := map[string]any{
+			"courseId": courseID,
+			"since":    newsSince,
+			"until":    newsUntil,
+			"count":    len(items),
+			"news":     newsListJSON(items, courseID),
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Println(string(b))
 		return nil
 	}
@@ -198,7 +295,7 @@ func runNewsList() error {
 		fmt.Println("No announcements in this course.")
 		return nil
 	}
-fmt.Printf("%d announcement%s\n", len(items), plural(len(items)))
+	fmt.Printf("%d announcement%s in course %s\n", len(items), plural(len(items)), courseID)
 	for _, n := range items {
 		when := n.StartDate
 		if len(when) > 16 {
@@ -213,35 +310,274 @@ fmt.Printf("%d announcement%s\n", len(items), plural(len(items)))
 		}
 		fmt.Printf("  %s\t%s\t%s%s\n", n.Id.String(), when, flags, truncate(n.Title, 80))
 	}
+	return nil
+}
+
+func runNewsListCrossCourse(jar *cookiejar.Jar) error {
+	courseIDs, err := newsCourseIDs(jar)
+	if err != nil {
+		return err
+	}
+	type flat struct {
+		news NewsItem
+		org  int
+	}
+	var all []flat
+	successes := 0
+	for _, idStr := range courseIDs {
+		orgID, _ := strconv.Atoi(idStr)
+		raw := fmt.Sprintf("%s/d2l/api/le/%s/%s/news/", ua.D2LBase, dupdata.D2LVersion(), idStr)
+		raw, _ = dupdata.AppendQuery(raw, "since", newsSince)
+		raw, _ = dupdata.AppendQuery(raw, "until", newsUntil)
+		items, err := dupdata.FetchJSONList[NewsItem](raw, jar)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[news] skipping course %s: %v\n", idStr, err)
+			continue
+		}
+		successes++
+		for _, n := range items {
+			if !withinRange(n, newsSince, newsUntil) {
+				continue
+			}
+			all = append(all, flat{news: n, org: orgID})
+		}
+	}
+	if successes == 0 {
+		return fmt.Errorf("news list: every per-course fetch failed (see stderr)")
+	}
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].news.StartDate > all[j].news.StartDate
+	})
+	if newsJSON {
+		grouped := make(map[string][]newsListJSONItem, len(courseIDs))
+		for _, cid := range courseIDs {
+			grouped[cid] = nil
+		}
+		for _, f := range all {
+			cid := fmt.Sprintf("%d", f.org)
+			grouped[cid] = append(grouped[cid], newsListJSONOne(f.news, cid)...)
+		}
+		flattened := make([]newsListJSONItem, 0, len(all))
+		for _, f := range all {
+			flattened = append(flattened, newsListJSONOne(f.news, fmt.Sprintf("%d", f.org))...)
+		}
+		out := map[string]any{
+			"courseCount": len(courseIDs),
+			"courses":     courseIDs,
+			"since":       newsSince,
+			"until":       newsUntil,
+			"count":       len(all),
+			"news":        flattened,
+			"perCourse":   grouped,
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(b))
 		return nil
+	}
+	if len(all) == 0 {
+		fmt.Println("No announcements across any of your courses.")
+		return nil
+	}
+	fmt.Printf("%d announcement%s across %d course%s\n",
+		len(all), plural(len(all)), len(courseIDs), plural(len(courseIDs)))
+	for _, f := range all {
+		when := f.news.StartDate
+		if len(when) > 16 {
+			when = when[:16]
+		}
+		pin := ""
+		if f.news.IsPinned {
+			pin = "[pinned] "
+		}
+		fmt.Printf("  %s\t%s\torg=%d\t%s%s\n", f.news.Id.String(), when, f.org, pin, truncate(f.news.Title, 80))
+	}
+	return nil
+}
+
+func newsListJSON(items []NewsItem, courseID string) []newsListJSONItem {
+	out := make([]newsListJSONItem, 0, len(items))
+	for _, n := range items {
+		out = append(out, newsListJSONOne(n, courseID)...)
+	}
+	return out
+}
+
+func newsListJSONOne(n NewsItem, sourceCourse string) []newsListJSONItem {
+	text, html := flattenBody(n, newsBodyFmt)
+	sourceInt := n.OrgUnitId
+	if sourceCourse != "" {
+		if v, err := strconv.Atoi(sourceCourse); err == nil {
+			sourceInt = v
+		}
+	}
+	return []newsListJSONItem{{
+		Id:            n.Id.String(),
+		OrgUnitId:     sourceInt,
+		Title:         n.Title,
+		Body:          text,
+		BodyHtml:      html,
+		StartDate:     n.StartDate,
+		EndDate:       n.EndDate,
+		IsPinned:      n.IsPinned,
+		IsPublished:   n.IsPublished,
+		HasAttachment: len(n.Attachments) > 0,
+		Source:        sourceCourse,
+	}}
+}
+
+// withinRange filters by the newsUntil bound locally, since D2L's `until`
+// parameter is not always honoured by every endpoint. We compare parsed
+// timestamps so equivalent instants with different serialisations
+// (fractional seconds, varying timezone offsets) compare correctly; a
+// fallback to ISO-8601 string comparison handles the rare case of an
+// unparseable item StartDate.
+func withinRange(n NewsItem, since, until string) bool {
+	if since != "" {
+		if ts, err := parseNewsDate(n.StartDate); err == nil {
+			if sinceTS, err := parseNewsDate(since); err == nil && ts.Before(sinceTS) {
+				return false
+			}
+		} else if n.StartDate < since {
+			return false
+		}
+	}
+	if until != "" {
+		if ts, err := parseNewsDate(n.StartDate); err == nil {
+			if untilTS, err := parseNewsDate(until); err == nil && ts.After(untilTS) {
+				return false
+			}
+		} else if n.StartDate > until {
+			return false
+		}
+	}
+	return true
+}
+
+// validateNewsBounds rejects malformed --since / --until values up front
+// so withinRange never silently includes out-of-range items behind a
+// successful result.
+func validateNewsBounds() error {
+	if newsSince != "" {
+		if _, err := parseNewsDate(newsSince); err != nil {
+			return fmt.Errorf("invalid --since %q: %w", newsSince, err)
+		}
+	}
+	if newsUntil != "" {
+		if _, err := parseNewsDate(newsUntil); err != nil {
+			return fmt.Errorf("invalid --until %q: %w", newsUntil, err)
+		}
+	}
+	return nil
+}
+
+// parseNewsDate accepts the ISO-8601 forms D2L emits (with or without
+// fractional seconds, with a Z or a numeric offset). Returns the
+// zero time on failure so the caller can fall back to string compare.
+func parseNewsDate(s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, fmt.Errorf("empty date")
+	}
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("unrecognised date %q", s)
 }
 
 func runNewsGet(newsID string) error {
-	if newsCourse == "" {
-		return fmt.Errorf("--course <orgUnitId> is required for `news get`")
-	}
 	ens, err := newsSession()
 	if err != nil {
 		return err
 	}
-	raw := fmt.Sprintf("%s/d2l/api/le/%s/%s/news/%s",
-		ua.D2LBase, dupdata.D2LVersion(), newsCourse, newsID)
-	var out NewsItem
-	if err := dupdata.FetchJSON(raw, ens.Jar, &out); err != nil {
+	if newsCourse == "" && newsCrossTry {
+		courseIDs, err := newsCourseIDs(ens.Jar)
+		if err != nil {
+			return err
+		}
+		var lastErr error
+		for _, cid := range courseIDs {
+			item, err := fetchNewsItem(ens.Jar, cid, newsID)
+			if err == nil {
+				return printNewsItem(item, cid)
+			}
+			lastErr = err
+		}
+		if lastErr != nil {
+			return fmt.Errorf("news get %s not found across any enrolled course (last error: %w)", newsID, lastErr)
+		}
+		return fmt.Errorf("news get %s not found", newsID)
+	}
+	if newsCourse == "" {
+		return fmt.Errorf("--course <orgUnitId> is required for `news get` (or omit it and --cross-try will search)")
+	}
+	item, err := fetchNewsItem(ens.Jar, newsCourse, newsID)
+	if err != nil {
 		return err
 	}
-	b, _ := json.MarshalIndent(out, "", "  ")
+	return printNewsItem(item, newsCourse)
+}
+
+func fetchNewsItem(jar *cookiejar.Jar, courseID, newsID string) (NewsItem, error) {
+	raw := fmt.Sprintf("%s/d2l/api/le/%s/%s/news/%s",
+		ua.D2LBase, dupdata.D2LVersion(), courseID, newsID)
+	var out NewsItem
+	err := dupdata.FetchJSON(raw, jar, &out)
+	return out, err
+}
+
+func printNewsItem(n NewsItem, sourceCourse string) error {
+	if newsJSON {
+		text, html := flattenBody(n, newsBodyFmt)
+		sourceInt := n.OrgUnitId
+		if v, err := strconv.Atoi(sourceCourse); err == nil {
+			sourceInt = v
+		}
+		out := map[string]any{
+			"id":            n.Id.String(),
+			"orgUnitId":     sourceInt,
+			"sourceCourse":  sourceCourse,
+			"title":         n.Title,
+			"body":          text,
+			"bodyHtml":      html,
+			"startDate":     n.StartDate,
+			"endDate":       n.EndDate,
+			"isPinned":      n.IsPinned,
+			"isPublished":   n.IsPublished,
+			"hasAttachment": len(n.Attachments) > 0,
+			"attachments":   n.Attachments,
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(b))
+		return nil
+	}
+	b, _ := json.MarshalIndent(n, "", "  ")
 	fmt.Println(string(b))
 	return nil
 }
 
 func runNewsAttachment(newsID, fileID string) error {
-	if newsCourse == "" {
-		return fmt.Errorf("--course <orgUnitId> is required for `news attachment`")
-	}
 	ens, err := newsSession()
 	if err != nil {
 		return err
+	}
+	if newsCourse == "" && newsCrossTry {
+		courseIDs, err := newsCourseIDs(ens.Jar)
+		if err != nil {
+			return err
+		}
+		for _, cid := range courseIDs {
+			raw := fmt.Sprintf("%s/d2l/api/le/%s/%s/news/%s/attachments/%s",
+				ua.D2LBase, dupdata.D2LVersion(), cid, newsID, fileID)
+			if err := asgDownloadFile(ens.Jar, raw, fmt.Sprintf("news-%s-%s", newsID, fileID)); err == nil {
+				return nil
+			}
+		}
+		return fmt.Errorf("news attachment %s/%s not found in any enrolled course", newsID, fileID)
+	}
+	if newsCourse == "" {
+		return fmt.Errorf("--course <orgUnitId> is required for `news attachment` (or omit and --cross-try)")
 	}
 	raw := fmt.Sprintf("%s/d2l/api/le/%s/%s/news/%s/attachments/%s",
 		ua.D2LBase, dupdata.D2LVersion(), newsCourse, newsID, fileID)
@@ -259,14 +595,14 @@ var (
 )
 
 type GradeValue struct {
-	GradeObjectId       int     `json:"GradeObjectId"`
-	GradeObjectName     string  `json:"GradeObjectName"`
-	GradeObjectType     int     `json:"GradeObjectType"`
-	PointsNumerator     float64 `json:"PointsNumerator"`
-	PointsDenominator   float64 `json:"PointsDenominator"`
-	DisplayedGrade      string  `json:"DisplayedGrade"`
-	GradeSchemeSymbol   string  `json:"GradeSchemeSymbol"`
-	IsReleased          bool    `json:"IsReleased"`
+	GradeObjectId     int     `json:"GradeObjectId"`
+	GradeObjectName   string  `json:"GradeObjectName"`
+	GradeObjectType   int     `json:"GradeObjectType"`
+	PointsNumerator   float64 `json:"PointsNumerator"`
+	PointsDenominator float64 `json:"PointsDenominator"`
+	DisplayedGrade    string  `json:"DisplayedGrade"`
+	GradeSchemeSymbol string  `json:"GradeSchemeSymbol"`
+	IsReleased        bool    `json:"IsReleased"`
 }
 
 func init() {
@@ -415,23 +751,23 @@ var (
 )
 
 type Forum struct {
-	Id            json.Number `json:"Id"`
-	Name          string      `json:"Name"`
-	Description   any         `json:"Description"`
-	AllowAnon     bool        `json:"AllowAnonymous"`
-	IsHidden      bool        `json:"IsHidden"`
-	NumTopics     int         `json:"NumTopics"`
-	NumPosts      int         `json:"NumPosts"`
-	LastPostDate  string      `json:"LastPostDate"`
+	Id           json.Number `json:"Id"`
+	Name         string      `json:"Name"`
+	Description  any         `json:"Description"`
+	AllowAnon    bool        `json:"AllowAnonymous"`
+	IsHidden     bool        `json:"IsHidden"`
+	NumTopics    int         `json:"NumTopics"`
+	NumPosts     int         `json:"NumPosts"`
+	LastPostDate string      `json:"LastPostDate"`
 }
 
 type ForumTopic struct {
-	Id            int    `json:"Id"`
-	Name          string `json:"Name"`
-	NumPosts      int    `json:"NumPosts"`
-	LastPostDate  string `json:"LastPostDate"`
-	IsPinned      bool   `json:"IsPinned"`
-	IsLocked      bool   `json:"IsLocked"`
+	Id           int    `json:"Id"`
+	Name         string `json:"Name"`
+	NumPosts     int    `json:"NumPosts"`
+	LastPostDate string `json:"LastPostDate"`
+	IsPinned     bool   `json:"IsPinned"`
+	IsLocked     bool   `json:"IsLocked"`
 }
 
 func init() {

@@ -26,7 +26,7 @@ const (
 )
 
 // InstallOptions configures an install run. ExecStart is the full ExecStart
-// line written into the service unit (typically "/usr/bin/schooltools archive"
+// line written into the service unit (typically "/usr/bin/schooltools archive update"
 // or the resolved path of the current binary).
 type InstallOptions struct {
 	// ExecStart is the command line to run. If empty, Install tries to
@@ -42,7 +42,7 @@ type InstallOptions struct {
 type Status struct {
 	Installed     bool     // true if the .service file is on disk
 	Enabled       bool     // true if systemctl says the timer is enabled
-	Active         bool     // true if the timer is currently active
+	Active        bool     // true if the timer is currently active
 	Next          string   // next scheduled run, formatted by systemctl
 	Left          string   // relative time until Next (e.g., "20min")
 	Last          string   // last run, if any
@@ -53,12 +53,14 @@ type Status struct {
 	UserDir       string   // ~/.config/systemd/user
 	TimerOutput   []string // raw `systemctl --user list-timers` lines
 	ListTimerExit int      // exit code from systemctl
+	Warnings      []string // human-readable warnings surfaced by Query (e.g. legacy ExecStart)
 }
 
 // renderExecStart returns the ExecStart string to bake into the service unit.
 // Prefers the caller's override; falls back to the absolute path of the
-// currently running binary followed by ` archive`. Returns a non-empty warning
-// when the resolved path is in a volatile location like /tmp.
+// currently running binary followed by ` archive update --no-auto-refresh`.
+// Returns a non-empty warning when the resolved path is in a volatile
+// location like /tmp.
 func renderExecStart(override string) (string, []string, error) {
 	if strings.TrimSpace(override) != "" {
 		return override, nil, nil
@@ -77,7 +79,7 @@ func renderExecStart(override string) (string, []string, error) {
 			fmt.Sprintf("binary lives at %s which may not survive reboot — "+
 				"install to /usr/local/bin or ~/.local/bin for a stable unit", abs))
 	}
-	return abs + " archive", warnings, nil
+	return abs + " archive update --no-auto-refresh", warnings, nil
 }
 
 // isVolatilePath returns true for paths that are cleaned on reboot or have
@@ -93,6 +95,37 @@ func isVolatilePath(p string) bool {
 		}
 	}
 	return false
+}
+
+// legacyExecStart reports whether the on-disk service unit still calls the
+// pre-archive-UX-redesign form (e.g. `archive` / `prune`). Parses each
+// ExecStart= directive (skipping comments and unrelated lines) and returns
+// true when none of them invoke `archive update`. A bare mention of
+// "archive update" in a Description= line cannot suppress the warning.
+func legacyExecStart(svcPath string) bool {
+	data, err := os.ReadFile(svcPath)
+	if err != nil {
+		return false
+	}
+	anyUpdate := false
+	anyExec := false
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if !strings.HasPrefix(line, "ExecStart=") {
+			continue
+		}
+		anyExec = true
+		if strings.Contains(line, "archive update") {
+			anyUpdate = true
+		}
+	}
+	if !anyExec {
+		return false
+	}
+	return !anyUpdate
 }
 
 // unitDir returns ~/.config/systemd/user, expanded. Returns an error if $HOME
@@ -208,7 +241,10 @@ func Uninstall() (Status, error) {
 }
 
 // Query inspects the current state: are the units on disk? is the timer
-// enabled? what's the next run time?
+// enabled? what's the next run time? Also flags when the installed service
+// was written by an older schooltools release whose ExecStart pre-dates the
+// `archive update` redesign — running `schooltools systemd install --force`
+// upgrades the unit in place.
 func Query() (Status, error) {
 	dir, err := unitDir()
 	if err != nil {
@@ -222,6 +258,10 @@ func Query() (Status, error) {
 	st := Status{Installed: installed, UnitPath: svcPath, UserDir: dir}
 	if !installed {
 		return st, nil
+	}
+	if legacyExecStart(svcPath) {
+		st.Warnings = append(st.Warnings,
+			"service unit uses a pre-archive-update ExecStart; rerun `schooltools systemd install --force` to upgrade in place")
 	}
 
 	// is-enabled
@@ -285,6 +325,7 @@ func Query() (Status, error) {
 // the six semantic columns. Robust to either layout:
 //   - NEXT is `-` (timer never fired):  firstDOW is at the LAST position
 //   - NEXT is a real datetime:           firstDOW is at position 0
+//
 // We anchor on the LAST datetime (second day-of-week token) which is always
 // present, then derive everything else relative to it.
 func splitTimerFields(f []string) (next, left, last, passed, unit, activates string, ok bool) {
