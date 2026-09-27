@@ -227,6 +227,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   silenced (`SilenceErrors = true`) and `Execute()` prints the message
   once to stderr. JSON-mode commands emit `{"error": …}` to stdout
   instead.
+- `archive export`'s suffix search used `os.Stat`, so a dangling symlink
+  at the chosen filename was treated as a free slot and the subsequent
+  `O_CREATE|O_EXCL` open then aborted the export. `uniqueDest` now
+  uses `os.Lstat`, matching what `copyFile` sees, so dangling symlinks
+  bump the suffix like any other occupied destination.
 - **P2:** `archive lock` checked the PID written in `archive.lock`
   *after* `flock` already succeeded. A successful flock is itself proof
   that no other process holds the lock, so the PID check only mattered

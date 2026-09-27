@@ -207,9 +207,12 @@ func sanitizeFilename(s string) string {
 // destination path that has already been returned by a previous call
 // in the same export run, including suffixed candidates. Both a
 // `reserved` hit and a real filesystem hit bump the suffix; an
-// unexpected Stat error (anything other than NotExist) is returned so
+// unexpected Lstat error (anything other than NotExist) is returned so
 // the caller can fail loudly instead of silently trying the next
-// suffix forever.
+// suffix forever. Lstat (not Stat) is used so dangling symlinks at a
+// candidate filename are treated as occupied — copyFile uses
+// O_CREATE|O_EXCL, which would otherwise fail on a symlink Stat reports
+// as absent.
 func uniqueDest(dir, base, ext string, used map[string]int, reserved map[string]struct{}) (string, error) {
 	key := filepath.Join(dir, base+"."+ext)
 	nextSuf := used[key] + 1
@@ -223,7 +226,7 @@ func uniqueDest(dir, base, ext string, used map[string]int, reserved map[string]
 		if _, taken := reserved[candidate]; taken {
 			continue
 		}
-		_, statErr := os.Stat(candidate)
+		_, statErr := os.Lstat(candidate)
 		switch {
 		case statErr == nil:
 			// Exists on disk — try the next suffix.

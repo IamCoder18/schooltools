@@ -362,6 +362,26 @@ func TestExportDryRunWritesNothing(t *testing.T) {
 	}
 }
 
+func TestUniqueDestSkipsDanglingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "Notes.pdf")
+	if err := os.Symlink(filepath.Join(dir, "does-not-exist"), link); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	if _, err := os.Stat(link); !os.IsNotExist(err) {
+		t.Fatalf("precondition: Stat should report NotExist for dangling symlink, got %v", err)
+	}
+
+	got, err := uniqueDest(dir, "Notes", "pdf", map[string]int{}, map[string]struct{}{})
+	if err != nil {
+		t.Fatalf("uniqueDest: %v", err)
+	}
+	want := filepath.Join(dir, "Notes (2).pdf")
+	if got != want {
+		t.Errorf("uniqueDest = %q, want %q (must skip dangling symlink at %q)", got, want, link)
+	}
+}
+
 func TestLoadStatusReportsMissingBodies(t *testing.T) {
 	dir := t.TempDir()
 	_, _, _ = SaveFileBody(dir, []byte("body"))
