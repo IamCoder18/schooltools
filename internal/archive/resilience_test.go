@@ -18,8 +18,10 @@ func TestRunSurvivesBrokenAndFailingTopics(t *testing.T) {
 		{TopicId: 6001, Title: "Fine", LastModifiedDate: "2026-03-01T00:00:00Z", TypeIdentifier: "File", Url: &goodURL},
 		{TopicId: 6002, Title: "Dead dropbox link", LastModifiedDate: "2022-03-15T16:25:36Z", IsBroken: true},
 		{TopicId: 6003, Title: "Vanished", LastModifiedDate: "2026-03-02T00:00:00Z"},
+		{TopicId: 6004, Title: "After the failure", LastModifiedDate: "2026-03-03T00:00:00Z"},
 	}}}}
 	f.topics[6001] = map[string]any{"TopicId": 6001, "Title": "Fine", "TypeIdentifier": "File", "Url": goodURL}
+	f.topics[6004] = map[string]any{"TopicId": 6004, "Title": "After the failure"}
 	// 6002 is flagged broken and 6003 is never registered, so the topics API 404s it.
 
 	srv := httptest.NewServer(f.handler())
@@ -30,11 +32,11 @@ func TestRunSurvivesBrokenAndFailingTopics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run should not abort on a broken/failing topic: %v", err)
 	}
-	if res.TopicsChecked != 3 {
-		t.Errorf("TopicsChecked=%d, want 3", res.TopicsChecked)
+	if res.TopicsChecked != 4 {
+		t.Errorf("TopicsChecked=%d, want 4", res.TopicsChecked)
 	}
-	if res.TopicsFetched != 1 {
-		t.Errorf("TopicsFetched=%d, want 1 (only the healthy topic)", res.TopicsFetched)
+	if res.TopicsFetched != 2 {
+		t.Errorf("TopicsFetched=%d, want 2 (healthy topics on both sides of the failure)", res.TopicsFetched)
 	}
 	if res.TopicsSkipped != 1 {
 		t.Errorf("TopicsSkipped=%d, want 1 (IsBroken topic)", res.TopicsSkipped)
@@ -42,13 +44,19 @@ func TestRunSurvivesBrokenAndFailingTopics(t *testing.T) {
 	if res.TopicsFailed != 1 {
 		t.Errorf("TopicsFailed=%d, want 1 (404 topic)", res.TopicsFailed)
 	}
+	if calls := f.topicCalls[6002]; calls != 0 {
+		t.Errorf("broken topic 6002 was fetched %d times, want 0 (must be skipped without an API call)", calls)
+	}
 
 	ci, err := LoadCourseIndex(dir, "4242")
 	if err != nil {
 		t.Fatalf("LoadCourseIndex: %v", err)
 	}
 	if ci.Topics[6001] == nil || ci.Topics[6001].Current == "" {
-		t.Error("healthy topic was not archived")
+		t.Error("healthy topic 6001 was not archived")
+	}
+	if ci.Topics[6004] == nil || ci.Topics[6004].Current == "" {
+		t.Error("topic 6004, queued after the failure, was not archived")
 	}
 	if ci.Topics[6002] != nil || ci.Topics[6003] != nil {
 		t.Error("broken/failing topics must not be recorded in the index")
@@ -76,6 +84,71 @@ func TestRunAbortsOnSessionExpired(t *testing.T) {
 	_, err := Run(Options{Root: t.TempDir(), Jar: newJar(t), BaseURL: srv.URL})
 	if err == nil {
 		t.Fatal("expected the run to abort on 401")
+	}
+	if !errors.Is(err, errSessionExpired) {
+		t.Errorf("err = %v, want errSessionExpired", err)
+	}
+}
+
+func TestRunAbortsOnExpiredCourseList(t *testing.T) {
+	f := newFakeD2L(t)
+	f.coursesStatus = http.StatusUnauthorized
+	srv := httptest.NewServer(f.handler())
+	defer srv.Close()
+
+	_, err := Run(Options{Root: t.TempDir(), Jar: newJar(t), BaseURL: srv.URL})
+	if err == nil {
+		t.Fatal("expected the run to abort when the course list 401s")
+	}
+	if !errors.Is(err, errSessionExpired) {
+		t.Errorf("err = %v, want errSessionExpired", err)
+	}
+}
+
+func TestRunAbortsOnLoginPageTopicResponse(t *testing.T) {
+	f := newFakeD2L(t)
+	f.courses = []d2lCourse{{OrgUnitId: json.Number("556"), Name: "Bio", Code: "BIO", IsActive: true}}
+	f.tocs["556"] = content.TocResponse{Modules: []content.TocModule{{
+		ModuleId: 1, Topics: []content.TocTopic{{TopicId: 78, Title: "Cells", LastModifiedDate: "2026-03-01T00:00:00Z"}},
+	}}}
+	f.topicRaw[78] = "<html><head><title>Log In</title></head><body>d2l login page</body></html>"
+	srv := httptest.NewServer(f.handler())
+	defer srv.Close()
+
+	dir := t.TempDir()
+	_, err := Run(Options{Root: dir, Jar: newJar(t), BaseURL: srv.URL})
+	if err == nil {
+		t.Fatal("expected the run to abort when a topic fetch returns the login page")
+	}
+	if !errors.Is(err, errSessionExpired) {
+		t.Errorf("err = %v, want errSessionExpired", err)
+	}
+	ci, lerr := LoadCourseIndex(dir, "556")
+	if lerr != nil {
+		t.Fatalf("LoadCourseIndex: %v", lerr)
+	}
+	if ci.Topics[78] != nil {
+		t.Error("the login page must not be archived as topic metadata")
+	}
+}
+
+func TestRunAbortsOnExpiredBodyDownload(t *testing.T) {
+	f := newFakeD2L(t)
+	f.courses = []d2lCourse{{OrgUnitId: json.Number("557"), Name: "Bio", Code: "BIO", IsActive: true}}
+	urlStr := "/content/enforced/557-BIO/notes.pdf"
+	f.tocs["557"] = content.TocResponse{Modules: []content.TocModule{{ModuleId: 1, Topics: []content.TocTopic{
+		{TopicId: 79, Title: "Notes", LastModifiedDate: "2026-03-01T00:00:00Z", TypeIdentifier: "File", Url: &urlStr},
+	}}}}
+	f.topics[79] = map[string]any{"TopicId": 79, "Title": "Notes", "TypeIdentifier": "File", "Url": urlStr}
+	f.bodyHandler = func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}
+	srv := httptest.NewServer(f.handler())
+	defer srv.Close()
+
+	_, err := Run(Options{Root: t.TempDir(), Jar: newJar(t), BaseURL: srv.URL, DownloadFiles: true})
+	if err == nil {
+		t.Fatal("expected the run to abort when a body download 401s")
 	}
 	if !errors.Is(err, errSessionExpired) {
 		t.Errorf("err = %v, want errSessionExpired", err)

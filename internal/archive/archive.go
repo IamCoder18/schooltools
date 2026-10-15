@@ -771,9 +771,9 @@ func diffCourse(opts Options, c Course) (CourseDiff, error) {
 // when DownloadFiles is true — otherwise all three stay zero and the
 // summary line simply omits the bodies section.
 type courseStats struct {
-	stale, checked, fetched             int
-	bodiesNew, bodiesReused, bodiesErr  int
-	failed, skipped                     int
+	stale, checked, fetched            int
+	bodiesNew, bodiesReused, bodiesErr int
+	failed, skipped                    int
 }
 
 // archiveCourse runs a single course's archive pass and returns the
@@ -893,6 +893,9 @@ func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats,
 		}
 		bodyBytes, contentType, berr := downloadFileBody(opts.Jar, bodyURL, opts.baseURL())
 		if berr != nil {
+			if errors.Is(berr, errSessionExpired) {
+				return s, berr
+			}
 			if opts.Verbose {
 				fmt.Fprintf(os.Stderr, "[archive]   body %d: %v (continuing)\n", q.topicID, berr)
 			}
@@ -987,6 +990,9 @@ func downloadFileBody(jar *cookiejar.Jar, rawURL, base string) ([]byte, string, 
 	}
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode/100 != 2 {
+		if res.StatusCode == 401 || res.StatusCode == 403 {
+			return nil, "", errSessionExpired
+		}
 		body, _ := io.ReadAll(res.Body)
 		msg := strings.TrimSpace(string(body))
 		if len(msg) > 200 {
@@ -1069,6 +1075,9 @@ func fetchTopicFor(base string, jar *cookiejar.Jar, orgUnitID string, topicID in
 			return nil, errSessionExpired
 		}
 		return nil, fmt.Errorf("D2L API returned %d %s for topic %d", res.StatusCode, res.Status, topicID)
+	}
+	if ct := res.Header.Get("Content-Type"); strings.Contains(ct, "text/html") || ua.IsLoginURL(res.Request.URL.String()) {
+		return nil, errSessionExpired
 	}
 	body, err := httpclient.BodyBytes(res)
 	if err != nil {
@@ -1300,6 +1309,9 @@ func fetchCoursesPage(jar *cookiejar.Jar, rawURL string) (d2lCoursesResponse, er
 		return d2lCoursesResponse{}, err
 	}
 	if res.StatusCode != 200 {
+		if res.StatusCode == 401 || res.StatusCode == 403 {
+			return d2lCoursesResponse{}, errSessionExpired
+		}
 		return d2lCoursesResponse{}, fmt.Errorf("D2L my-courses API returned %d %s", res.StatusCode, res.Status)
 	}
 	ct := res.Header.Get("Content-Type")

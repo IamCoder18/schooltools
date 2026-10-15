@@ -2,6 +2,7 @@ package archive
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -424,14 +425,16 @@ func TestPruneKeepsLiveAcrossCourses(t *testing.T) {
 // ---- end-to-end with stubbed HTTP -----------------------------------------
 
 type fakeD2L struct {
-	t           *testing.T
-	courses     []d2lCourse
-	tocs        map[string]content.TocResponse
-	topics      map[int]map[string]any
-	topicStatus map[int]int
-	tocCalls    int
-	topicCalls  map[int]int
-	bodyHandler http.HandlerFunc // optional; serves file bodies on arbitrary paths
+	t             *testing.T
+	courses       []d2lCourse
+	coursesStatus int
+	tocs          map[string]content.TocResponse
+	topics        map[int]map[string]any
+	topicRaw      map[int]string
+	topicStatus   map[int]int
+	tocCalls      int
+	topicCalls    map[int]int
+	bodyHandler   http.HandlerFunc // optional; serves file bodies on arbitrary paths
 }
 
 func newFakeD2L(t *testing.T) *fakeD2L {
@@ -455,6 +458,7 @@ func newFakeD2L(t *testing.T) *fakeD2L {
 		t:           t,
 		tocs:        map[string]content.TocResponse{},
 		topics:      map[int]map[string]any{},
+		topicRaw:    map[int]string{},
 		topicStatus: map[int]int{},
 		topicCalls:  map[int]int{},
 	}
@@ -463,6 +467,10 @@ func newFakeD2L(t *testing.T) *fakeD2L {
 func (f *fakeD2L) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/d2l/le/manageCourses/api/mycourses", func(w http.ResponseWriter, r *http.Request) {
+		if f.coursesStatus != 0 {
+			w.WriteHeader(f.coursesStatus)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(d2lCoursesResponse{Courses: f.courses})
 	})
@@ -492,6 +500,11 @@ func (f *fakeD2L) handler() http.Handler {
 			f.topicCalls[id]++
 			if code, ok := f.topicStatus[id]; ok {
 				w.WriteHeader(code)
+				return
+			}
+			if raw, ok := f.topicRaw[id]; ok {
+				w.Header().Set("Content-Type", "text/html")
+				_, _ = io.WriteString(w, raw)
 				return
 			}
 			topic, ok := f.topics[id]
