@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/aarav/schooltools/internal/httpclient"
@@ -20,18 +21,29 @@ func captureStderr(t *testing.T, fn func()) string {
 		t.Fatalf("pipe: %v", err)
 	}
 	os.Stderr = w
-	fn()
-	_ = w.Close()
-	os.Stderr = old
-	data, _ := io.ReadAll(r)
-	return string(data)
+	// Drain the pipe concurrently so a fn that writes more than the
+	// pipe buffer cannot block, and restore os.Stderr even if fn
+	// panics or calls t.Fatal.
+	done := make(chan string)
+	go func() {
+		data, _ := io.ReadAll(r)
+		done <- string(data)
+	}()
+	func() {
+		defer func() {
+			_ = w.Close()
+			os.Stderr = old
+		}()
+		fn()
+	}()
+	return <-done
 }
 
 func TestFetchPostDumpsOnlyWhenVerbose(t *testing.T) {
 	secret := "supersecretvalue-but-very-long-cookie-tail"
-	requests := 0
+	var requests atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
+		requests.Add(1)
 		http.SetCookie(w, &http.Cookie{Name: "d2lSessionVal", Value: secret, Path: "/"})
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -54,8 +66,8 @@ func TestFetchPostDumpsOnlyWhenVerbose(t *testing.T) {
 	if out != "" {
 		t.Errorf("fetchPost without --verbose wrote to stderr: %q", out)
 	}
-	if requests != 1 {
-		t.Errorf("server saw %d requests, want 1 (the non-verbose POST must still be sent)", requests)
+	if got := requests.Load(); got != 1 {
+		t.Errorf("server saw %d requests, want 1 (the non-verbose POST must still be sent)", got)
 	}
 
 	out = captureStderr(t, func() {
@@ -69,8 +81,8 @@ func TestFetchPostDumpsOnlyWhenVerbose(t *testing.T) {
 	if strings.Contains(out, secret) {
 		t.Errorf("verbose fetchPost leaked the full cookie value: %q", out)
 	}
-	if requests != 2 {
-		t.Errorf("server saw %d requests, want 2", requests)
+	if got := requests.Load(); got != 2 {
+		t.Errorf("server saw %d requests, want 2", got)
 	}
 }
 
