@@ -82,6 +82,7 @@ import (
 	"github.com/aarav/schooltools/internal/content"
 	"github.com/aarav/schooltools/internal/httpclient"
 	"github.com/aarav/schooltools/internal/ua"
+	"github.com/aarav/schooltools/internal/urlutil"
 )
 
 const (
@@ -945,20 +946,12 @@ func downloadFileBody(jar *cookiejar.Jar, rawURL, base string) ([]byte, string, 
 	if rawURL == "" {
 		return nil, "", fmt.Errorf("empty URL")
 	}
-	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
-		b := base
-		if b == "" {
-			b = ua.D2LBase
-		}
-		parsed, err := url.Parse(b)
-		if err != nil {
-			return nil, "", fmt.Errorf("resolve base: %w", err)
-		}
-		rel, err := url.Parse(rawURL)
-		if err != nil {
-			return nil, "", fmt.Errorf("parse %s: %w", rawURL, err)
-		}
-		rawURL = parsed.ResolveReference(rel).String()
+	if base == "" {
+		base = ua.D2LBase
+	}
+	rawURL, rerr := urlutil.ResolveD2L(base, rawURL)
+	if rerr != nil {
+		return nil, "", fmt.Errorf("resolve %s: %w", rawURL, rerr)
 	}
 	res, err := httpclient.FollowRedirects(rawURL, jar, httpclient.FetchOptions{
 		Headers: map[string]string{"Accept": "*/*"},
