@@ -402,7 +402,11 @@ func runArchiveUpdateDryRun(args []string, abs string) error {
 		fmt.Printf("Bodies: %d would fill (convergence)\n", result.BodiesWouldFetch)
 	}
 	if result.TopicsWouldFetch == 0 && result.BodiesWouldFetch == 0 {
-		fmt.Println("Nothing to do — your archive is up to date.")
+		if result.TopicsBroken > 0 {
+			fmt.Println("Nothing to fetch — every remaining topic is flagged broken on D2L (see above); they will never be archived.")
+		} else {
+			fmt.Println("Nothing to do — your archive is up to date.")
+		}
 	} else {
 		fmt.Println("Re-run without --dry-run to apply.")
 	}
@@ -426,6 +430,7 @@ func printUpdateDryRunTable(result archive.DiffResult) {
 			fmt.Sprintf("%d", c.TopicsNew),
 			fmt.Sprintf("%d", c.TopicsModified),
 			fmt.Sprintf("%d", c.TopicsUnchanged),
+			fmt.Sprintf("%d", c.TopicsBroken),
 			fetch, bodies,
 		})
 	}
@@ -434,11 +439,11 @@ func printUpdateDryRunTable(result archive.DiffResult) {
 		return
 	}
 	out := table.Render(table.Options{
-		Headers: []string{"ID", "Code", "Name", "Total", "New", "Modified", "Unchanged", "WouldFetch", "Bodies"},
+		Headers: []string{"ID", "Code", "Name", "Total", "New", "Modified", "Unchanged", "Broken", "WouldFetch", "Bodies"},
 		Widths: table.Widths([]table.ColumnSpec{
 			table.Fixed(8), table.Fixed(8), table.Flex(20),
 			table.Fixed(6), table.Fixed(5), table.Fixed(9),
-			table.Fixed(10), table.Fixed(10), table.Flex(8),
+			table.Fixed(10), table.Fixed(6), table.Fixed(10), table.Flex(8),
 		}, table.TerminalWidth()),
 		Rows: rows,
 	})

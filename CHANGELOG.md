@@ -320,17 +320,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`IsBroken: true`, 404 on the topics API) — one dead 2022 dropbox
   link in a single course blocked every course queued after it from
   archiving. Topics D2L flags broken are now skipped without an API
-  call, failed fetches are counted and retried on the next pass, and
-  only a 401/403 stops the run (reported as `session expired; run
-  'schooltools login'` instead of a raw status line). The update
-  summary and `--json` envelope gain `topicsFailed` / `topicsSkipped`
-  counters, and `--dry-run` reports broken topics so the plan matches
-  what a real pass does.
+  call and topic-level fetch failures are counted and retried on the
+  next pass; a 401/403 (or a login-page redirect) stops the run
+  directly with `session expired; run 'schooltools login'`. A burst of
+  consecutive transport failures (network down, DNS dead) now aborts
+  the pass too instead of sending one doomed request per topic and
+  reporting success — HTTP failures such as a 404 on a deleted topic
+  keep the continue behavior. Course-level fetch and storage errors
+  still stop the run. The update summary and `--json` envelope gain
+  `topicsFailed` / `topicsSkipped` counters, and `--dry-run` reports
+  broken topics so the plan matches what a real pass does.
 - **P1:** `archive` status and `archive find` trusted the index's
   `currentBody` pointer instead of the filesystem, so a store with
-  186 dangling pointers (see the 0.2.0 prune entry) reported
-  "Bodies: 326 present, 8 missing" while 186 blobs were actually
-  gone. `LoadStatus` now stats each blob; `find --with-bodies` gained
+  186 dangling pointers (from the `prune` entry under
+  Unreleased) reported "Bodies: 326 present, 8 missing" while
+  186 blobs were actually gone. `LoadStatus` now stats each blob
+  (a stat error other than "not exist" no longer counts as
+  missing); `find --with-bodies` gained
   the `WithBodiesOnDisk` filter and `find --missing-bodies` also
   matches topics whose pointer exists but whose blob does not.
   `HasBody` on search hits and `FileTopic` reflects on-disk state.
@@ -350,7 +356,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fresh installs printed no next-run time at all, and mis-reported
   UNIT/ACTIVATES when PASSED was a placeholder. The parser now
   anchors on the trailing unit columns and treats placeholders
-  explicitly.
+  explicitly — both `-` and systemd 249's `n/a` — keeps the whole
+  multi-token LEFT field (`29min left`), and renders no next-run line
+  at all when the timer has no future elapse. `Uninstall` also
+  reports removal errors instead of silently claiming success, and is
+  a no-op again when nothing was installed.
 - **P2:** `systemd install` printed the volatile-binary-path warning
   straight to stderr instead of routing it through `Status.Warnings`
   (invisible to `--json`); `Uninstall` built a `removed` slice it
@@ -358,6 +368,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   flagged by the legacy-ExecStart warning.
 
 ### Security
+
 - **P1:** The login/auto-refresh HTTP debug dump (`<< Set-Cookie: …`
   values, request URLs) was printed **unconditionally** on every form
   POST — `fetchPost` didn't take `Options`, and every auto-refresh
@@ -375,10 +386,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   generic failures: the my-courses listing 401'd as a course-list
   error, a topic request that redirected to the D2L login page
   (HTTP 200 + `text/html`) archived the login HTML as the topic's
-  metadata blob via the non-JSON fallback, and a 401 on a file-body
-  download was counted as an ordinary body error so the run "succeeded"
-  with missing bodies. All three paths now map to `errSessionExpired`
-  and stop the run with `session expired; run 'schooltools login'`.
+  metadata blob via the non-JSON fallback, a redirected file-body
+  download that ended at the login page hashed that HTML as the
+  topic's body, and a 401 on a body download was counted as an
+  ordinary body error so the run "succeeded" with missing bodies.
+  All of these paths now map to `errSessionExpired` and stop the run
+  with `session expired; run 'schooltools login'`.
 
 ## [0.2.0] - 2026-09-05
 

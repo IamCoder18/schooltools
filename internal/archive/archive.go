@@ -97,8 +97,8 @@ var errTransport = errors.New("transport failure")
 
 type transportError struct{ err error }
 
-func (e *transportError) Error() string { return fmt.Sprintf("transport: %v", e.err) }
-func (e *transportError) Unwrap() error { return e.err }
+func (e *transportError) Error() string        { return fmt.Sprintf("transport: %v", e.err) }
+func (e *transportError) Unwrap() error        { return e.err }
 func (e *transportError) Is(target error) bool { return target == errTransport }
 
 // maxConsecutiveTransportFailures bounds how many transport-level
