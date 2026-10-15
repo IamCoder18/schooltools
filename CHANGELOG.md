@@ -338,13 +338,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   "skipped-missing-body" reporting is unchanged.
 - **P2:** D2L file-body URLs that contain unescaped path characters —
   literal spaces, a bare `%` (`Acetic Acid, 5% (Vinegar).pdf`), `#` in
-  filenames (`Quiz #3 …`) — either failed `url.Parse` with
-  `invalid URL escape` or were truncated at the `#` into a URL
+  filenames (`Quiz #3 …`), a literal `?` — either failed `url.Parse`
+  with `invalid URL escape` or were truncated at the `#` into a URL
   fragment and 404'd. The new `internal/urlutil` re-encodes the path
-  portion of a reference (preserving already-valid `%XX` sequences
-  and query strings) before it is resolved against the LMS base URL;
-  both `archive update`'s body downloads and `download` route
-  through it.
+  portion of a reference (preserving already-valid `%XX` sequences;
+  D2L file URLs never carry a query string, so `?` is a path
+  character) and applies the same cleaning to absolute URLs; both
+  `archive update`'s body downloads and `download` route through it.
 - **P2:** `systemd status` dropped `systemctl list-timers` data rows
   whose LAST column was a placeholder (a timer that never fired), so
   fresh installs printed no next-run time at all, and mis-reported
@@ -366,10 +366,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `SAMLRequest` URL and raw `d2lSessionVal` / `d2lSecureSessionVal`
   cookie values to stderr (and into journald under the systemd
   unit), violating the threat model in `SECURITY.md`. `fetchPost` now
-  dumps only behind `--verbose`, SAML parameters
-  (`SAMLRequest`/`SAMLResponse`/`RelayState`) are replaced with a
-  length marker even in verbose mode, and cookie values are
-  truncated the same way the per-hop dump truncates them.
+  dumps only behind `--verbose`; every verbose URL print (request URL,
+  Referer, Location, redirect targets, POST form actions, GET
+  failures) redacts `SAMLRequest` / `SAMLResponse` / `RelayState` to
+  a length marker, and cookie values are redacted entirely rather
+  than truncated.
+- **P1:** An expired session during an archive run was reported as
+  generic failures: the my-courses listing 401'd as a course-list
+  error, a topic request that redirected to the D2L login page
+  (HTTP 200 + `text/html`) archived the login HTML as the topic's
+  metadata blob via the non-JSON fallback, and a 401 on a file-body
+  download was counted as an ordinary body error so the run "succeeded"
+  with missing bodies. All three paths now map to `errSessionExpired`
+  and stop the run with `session expired; run 'schooltools login'`.
 
 ## [0.2.0] - 2026-09-05
 
