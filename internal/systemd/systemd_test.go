@@ -8,7 +8,7 @@ import (
 
 func TestSplitTimerFieldsBothDatetimes(t *testing.T) {
 	f := []string{
-		"Wed", "2026-10-14", "20:30:55", "MDT", "29min",
+		"Wed", "2026-10-14", "20:30:55", "MDT", "29min", "left",
 		"Wed", "2026-10-14", "20:00:55", "MDT", "23s", "ago",
 		"schooltools-archive.timer", "schooltools-archive.service",
 	}
@@ -19,8 +19,8 @@ func TestSplitTimerFieldsBothDatetimes(t *testing.T) {
 	if next != "Wed 2026-10-14 20:30:55 MDT" {
 		t.Errorf("next = %q", next)
 	}
-	if left != "29min" {
-		t.Errorf("left = %q", left)
+	if left != "29min left" {
+		t.Errorf("left = %q, want the full multi-token LEFT field", left)
 	}
 	if last != "Wed 2026-10-14 20:00:55 MDT" {
 		t.Errorf("last = %q", last)
@@ -35,8 +35,8 @@ func TestSplitTimerFieldsBothDatetimes(t *testing.T) {
 
 func TestSplitTimerFieldsNeverFired(t *testing.T) {
 	f := []string{
-		"Wed", "2026-10-14", "21:00:00", "MDT", "30min",
-		"-", "-",
+		"Wed", "2026-10-14", "21:00:00", "MDT", "30min", "left",
+		"n/a", "n/a",
 		"schooltools-archive.timer", "schooltools-archive.service",
 	}
 	next, left, last, passed, unit, activates, ok := splitTimerFields(f)
@@ -46,8 +46,8 @@ func TestSplitTimerFieldsNeverFired(t *testing.T) {
 	if next != "Wed 2026-10-14 21:00:00 MDT" {
 		t.Errorf("next = %q, want the upcoming run", next)
 	}
-	if left != "30min" {
-		t.Errorf("left = %q", left)
+	if left != "30min left" {
+		t.Errorf("left = %q, want the full multi-token LEFT field", left)
 	}
 	if last != "" || passed != "" {
 		t.Errorf("last/passed = %q/%q, want empty", last, passed)
@@ -59,7 +59,7 @@ func TestSplitTimerFieldsNeverFired(t *testing.T) {
 
 func TestSplitTimerFieldsPlaceholderPassed(t *testing.T) {
 	f := []string{
-		"Wed", "2026-10-14", "20:30:55", "MDT", "29min",
+		"Wed", "2026-10-14", "20:30:55", "MDT", "29min", "left",
 		"Wed", "2026-10-14", "20:00:55", "MDT", "-",
 		"schooltools-archive.timer", "schooltools-archive.service",
 	}
@@ -67,7 +67,7 @@ func TestSplitTimerFieldsPlaceholderPassed(t *testing.T) {
 	if !ok {
 		t.Fatal("expected ok")
 	}
-	if next != "Wed 2026-10-14 20:30:55 MDT" || left != "29min" {
+	if next != "Wed 2026-10-14 20:30:55 MDT" || left != "29min left" {
 		t.Errorf("next/left = %q/%q", next, left)
 	}
 	if last != "Wed 2026-10-14 20:00:55 MDT" {
@@ -101,7 +101,7 @@ func TestSplitTimerFieldsMultiTokenPassed(t *testing.T) {
 
 func TestSplitTimerFieldsPlaceholderNextRealLast(t *testing.T) {
 	f := []string{
-		"-", "-",
+		"n/a", "n/a",
 		"Wed", "2026-10-14", "20:00:55", "MDT", "23s", "ago",
 		"schooltools-archive.timer", "schooltools-archive.service",
 	}
@@ -109,8 +109,10 @@ func TestSplitTimerFieldsPlaceholderNextRealLast(t *testing.T) {
 	if !ok {
 		t.Fatal("expected ok for a placeholder-NEXT row")
 	}
-	if next != "-" {
-		t.Errorf("next = %q, want the placeholder", next)
+	// A placeholder NEXT must normalize to empty so status rendering
+	// prints no "Next run:" line at all instead of "Next run: n/a".
+	if next != "" {
+		t.Errorf("next = %q, want empty for a placeholder", next)
 	}
 	if left != "" {
 		t.Errorf("left = %q, want empty", left)

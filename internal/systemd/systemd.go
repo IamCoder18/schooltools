@@ -6,6 +6,7 @@ package systemd
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -224,10 +225,35 @@ func Uninstall() (Status, error) {
 
 	svcPath := filepath.Join(dir, ServiceName)
 	tmrPath := filepath.Join(dir, TimerName)
-	_ = os.Remove(svcPath)
-	_ = os.Remove(tmrPath)
+	removed := false
+	remove := func(p string) error {
+		err := os.Remove(p)
+		switch {
+		case err == nil:
+			removed = true
+			return nil
+		case errors.Is(err, os.ErrNotExist):
+			return nil
+		default:
+			return err
+		}
+	}
+	var rmErr error
+	if err := remove(svcPath); err != nil {
+		rmErr = errors.Join(rmErr, err)
+	}
+	if err := remove(tmrPath); err != nil {
+		rmErr = errors.Join(rmErr, err)
+	}
+	if !removed && rmErr == nil {
+		// Nothing was installed: leave systemctl alone entirely.
+		return Status{UserDir: dir}, nil
+	}
 	if _, err := runSystemctl("daemon-reload"); err != nil {
 		return Status{}, fmt.Errorf("daemon-reload after uninstall failed: %w", err)
+	}
+	if rmErr != nil {
+		return Status{UserDir: dir}, fmt.Errorf("remove unit files: %w", rmErr)
 	}
 	return Status{UserDir: dir}, nil
 }
@@ -267,8 +293,8 @@ func Query() (Status, error) {
 	// Parse `list-timers` output. The header line lists columns:
 	//   NEXT  LEFT  LAST  PASSED  UNIT  ACTIVATES
 	// and each data line is a fixed-width-ish sequence of:
-	//   <NEXT datetime, ~4 tokens>  <LEFT, 1 token>
-	//   <LAST datetime, ~4 tokens>  <PASSED, 2 tokens like "9min ago">
+	//   <NEXT datetime, ~4 tokens>  <LEFT, display text like "29min left">
+	//   <LAST datetime, ~4 tokens>  <PASSED, display text like "9min ago">
 	//   <UNIT>  <ACTIVATES>
 	// We don't try to be clever about column widths — we just locate the
 	// header, then for each non-header, non-blank, non-summary line, pull
@@ -313,17 +339,23 @@ func Query() (Status, error) {
 	return st, nil
 }
 
-const timerPlaceholder = "-"
+// isTimerPlaceholder reports whether a list-timers token is an empty
+// column. systemctl prints "-" on most versions and "n/a" on systemd
+// 249+ for empty NEXT/LEFT/LAST/PASSED columns.
+func isTimerPlaceholder(s string) bool {
+	return s == "-" || s == "n/a"
+}
 
 // splitTimerFields groups a token slice from a `list-timers` data row into
 // the six semantic columns. The row layout is:
 //
-//	<NEXT: 4 tokens>  <LEFT: 1 token>  <LAST: 4 tokens | "-">  <PASSED: "N ago" | "-">  <UNIT>  <ACTIVATES>
+//	<NEXT: 4 tokens>  <LEFT: 1+ tokens ("29min", "29min left")>  <LAST: 4 tokens | placeholder>  <PASSED: "N ago" | placeholder>  <UNIT>  <ACTIVATES>
 //
 // The final two tokens are always UNIT and ACTIVATES, so they anchor the
 // parse. LAST and PASSED are placeholders until the timer has fired at
 // least once; a placeholder PASSED must not shift the UNIT/ACTIVATES
-// columns.
+// columns. LEFT is human display text ("29min left"), not a fixed
+// token count, so its slice runs up to the next known column.
 func splitTimerFields(f []string) (next, left, last, passed, unit, activates string, ok bool) {
 	if len(f) < 6 {
 		return
@@ -340,24 +372,31 @@ func splitTimerFields(f []string) (next, left, last, passed, unit, activates str
 	switch len(dows) {
 	case 1:
 		if dows[0] == 0 {
-			if len(rest) < 5 {
+			// NEXT is real; LAST and PASSED are single-token
+			// placeholders, so LEFT runs from the end of the NEXT
+			// datetime up to those two trailing tokens.
+			if len(rest) < 7 {
 				return
 			}
 			next = strings.Join(rest[:4], " ")
-			if rest[4] != timerPlaceholder {
-				left = rest[4]
+			if l := rest[4 : len(rest)-2]; !allPlaceholders(l) {
+				left = strings.Join(l, " ")
 			}
 		} else {
+			// NEXT is a placeholder (timer with no next elapse);
+			// the sole DOW token starts LAST.
 			if dows[0]+4 > len(rest) {
 				return
 			}
-			next = strings.Join(rest[:dows[0]-1], " ")
-			if rest[dows[0]-1] != timerPlaceholder {
+			if toks := rest[:dows[0]-1]; !allPlaceholders(toks) {
+				next = strings.Join(toks, " ")
+			}
+			if dows[0] >= 2 && !isTimerPlaceholder(rest[dows[0]-1]) {
 				left = rest[dows[0]-1]
 			}
 			last = strings.Join(rest[dows[0]:dows[0]+4], " ")
 			mid := rest[dows[0]+4:]
-			if len(mid) == 1 && mid[0] == timerPlaceholder {
+			if len(mid) == 1 && isTimerPlaceholder(mid[0]) {
 				mid = nil
 			}
 			passed = strings.Join(mid, " ")
@@ -367,12 +406,12 @@ func splitTimerFields(f []string) (next, left, last, passed, unit, activates str
 			return
 		}
 		next = strings.Join(rest[:4], " ")
-		if rest[4] != timerPlaceholder {
-			left = rest[4]
+		if l := rest[4:dows[1]]; !allPlaceholders(l) {
+			left = strings.Join(l, " ")
 		}
 		last = strings.Join(rest[dows[1]:dows[1]+4], " ")
 		mid := rest[dows[1]+4:]
-		if len(mid) == 1 && mid[0] == timerPlaceholder {
+		if len(mid) == 1 && isTimerPlaceholder(mid[0]) {
 			mid = nil
 		}
 		passed = strings.Join(mid, " ")
@@ -381,6 +420,20 @@ func splitTimerFields(f []string) (next, left, last, passed, unit, activates str
 	}
 	ok = true
 	return
+}
+
+// allPlaceholders reports whether every token is an empty-column marker
+// (or the slice is empty), i.e. the column carries no real value.
+func allPlaceholders(toks []string) bool {
+	if len(toks) == 0 {
+		return true
+	}
+	for _, t := range toks {
+		if !isTimerPlaceholder(t) {
+			return false
+		}
+	}
+	return true
 }
 
 // splitNonEmptyLines trims trailing whitespace and drops empty lines.
