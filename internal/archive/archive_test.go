@@ -428,6 +428,7 @@ type fakeD2L struct {
 	courses     []d2lCourse
 	tocs        map[string]content.TocResponse
 	topics      map[int]map[string]any
+	topicStatus map[int]int
 	tocCalls    int
 	topicCalls  map[int]int
 	bodyHandler http.HandlerFunc // optional; serves file bodies on arbitrary paths
@@ -451,10 +452,11 @@ func newFakeD2L(t *testing.T) *fakeD2L {
 	})
 	d2lver.Reset()
 	return &fakeD2L{
-		t:          t,
-		tocs:       map[string]content.TocResponse{},
-		topics:     map[int]map[string]any{},
-		topicCalls: map[int]int{},
+		t:           t,
+		tocs:        map[string]content.TocResponse{},
+		topics:      map[int]map[string]any{},
+		topicStatus: map[int]int{},
+		topicCalls:  map[int]int{},
 	}
 }
 
@@ -488,6 +490,10 @@ func (f *fakeD2L) handler() http.Handler {
 			}
 			id := atoi(parts[7])
 			f.topicCalls[id]++
+			if code, ok := f.topicStatus[id]; ok {
+				w.WriteHeader(code)
+				return
+			}
 			topic, ok := f.topics[id]
 			if !ok {
 				http.NotFound(w, r)

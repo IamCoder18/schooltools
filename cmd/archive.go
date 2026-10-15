@@ -236,6 +236,10 @@ var archiveUpdateCmd = &cobra.Command{
 		"body is missing on disk, even when its metadata is unchanged. Pass\n" +
 		"--no-bodies to skip body downloads. Pass --dry-run to preview without\n" +
 		"writing.\n\n" +
+		"Topics D2L flags as broken, and topics whose metadata fetch fails, are\n" +
+		"skipped and counted instead of aborting the pass — one dead topic can no\n" +
+		"longer stop the rest of your courses from archiving. A 401/403 response\n" +
+		"still stops the run with a \"session expired\" error.\n\n" +
 		"Examples:\n" +
 		"  schooltools archive update\n" +
 		"  schooltools archive update 12345 67890\n" +
@@ -309,6 +313,8 @@ func runArchiveUpdate(args []string) error {
 			"topicsChecked":  result.TopicsChecked,
 			"topicsFetched":  result.TopicsFetched,
 			"topicsStale":    result.TopicsStale,
+			"topicsFailed":   result.TopicsFailed,
+			"topicsSkipped":  result.TopicsSkipped,
 			"bodiesNew":      result.BodiesFetched,
 			"bodiesReused":   result.BodiesReused,
 			"bodiesFailed":   result.BodiesFailed,
@@ -321,8 +327,15 @@ func runArchiveUpdate(args []string) error {
 	fmt.Printf("Archive root: %s\n", result.Root)
 	fmt.Printf("Scanned %d course%s in %s\n",
 		result.CoursesScanned, plural(result.CoursesScanned), elapsed.Round(time.Millisecond))
-	fmt.Printf("Topics: %d checked, %d fetched, %d unchanged\n",
-		result.TopicsChecked, result.TopicsFetched, result.TopicsStale)
+	extra := ""
+	if result.TopicsSkipped > 0 {
+		extra += fmt.Sprintf(", %d skipped (broken)", result.TopicsSkipped)
+	}
+	if result.TopicsFailed > 0 {
+		extra += fmt.Sprintf(", %d failed", result.TopicsFailed)
+	}
+	fmt.Printf("Topics: %d checked, %d fetched, %d unchanged%s\n",
+		result.TopicsChecked, result.TopicsFetched, result.TopicsStale, extra)
 	if !archiveUpdateNoBodies && result.BodiesFetched+result.BodiesReused+result.BodiesFailed > 0 {
 		fmt.Printf("File bodies: %d new, %d unchanged (same SHA), %d errors\n",
 			result.BodiesFetched, result.BodiesReused, result.BodiesFailed)
@@ -367,6 +380,7 @@ func runArchiveUpdateDryRun(args []string, abs string) error {
 			"topicsChecked":    result.TopicsChecked,
 			"topicsWouldFetch": result.TopicsWouldFetch,
 			"topicsUnchanged":  result.TopicsStale,
+			"topicsBroken":     result.TopicsBroken,
 			"bodiesWouldFetch": result.BodiesWouldFetch,
 			"elapsedSeconds":   elapsed.Seconds(),
 			"perCourse":        result.PerCourse,
@@ -378,8 +392,12 @@ func runArchiveUpdateDryRun(args []string, abs string) error {
 	printUpdateDryRunTable(result)
 	fmt.Printf("\nWould scan %d course%s in %s\n",
 		result.CoursesScanned, plural(result.CoursesScanned), elapsed.Round(time.Millisecond))
-	fmt.Printf("Topics: %d checked, %d would fetch, %d unchanged\n",
-		result.TopicsChecked, result.TopicsWouldFetch, result.TopicsStale)
+	broken := ""
+	if result.TopicsBroken > 0 {
+		broken = fmt.Sprintf(" (%d broken topic%s never fetched)", result.TopicsBroken, plural(result.TopicsBroken))
+	}
+	fmt.Printf("Topics: %d checked, %d would fetch, %d unchanged%s\n",
+		result.TopicsChecked, result.TopicsWouldFetch, result.TopicsStale, broken)
 	if result.BodiesWouldFetch > 0 {
 		fmt.Printf("Bodies: %d would fill (convergence)\n", result.BodiesWouldFetch)
 	}

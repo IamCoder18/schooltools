@@ -68,6 +68,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http/cookiejar"
@@ -84,6 +85,8 @@ import (
 	"github.com/aarav/schooltools/internal/ua"
 	"github.com/aarav/schooltools/internal/urlutil"
 )
+
+var errSessionExpired = errors.New("session expired; run 'schooltools login'")
 
 const (
 	// SchemaVersion is bumped when the on-disk layout changes in a way that
@@ -220,9 +223,11 @@ type Result struct {
 	TopicsChecked  int
 	TopicsFetched  int
 	TopicsStale    int
-	BodiesFetched  int // File topics whose body blob was newly saved (SHA changed or first-ever)
-	BodiesReused   int // File topics whose body matched the saved hash — copy skipped
-	BodiesFailed   int // File topics whose body download errored (metadata still saved)
+	TopicsFailed   int
+	TopicsSkipped  int
+	BodiesFetched  int
+	BodiesReused   int
+	BodiesFailed   int
 }
 
 // DiffResult is the structured output of a Diff pass — what would a Run
@@ -233,11 +238,11 @@ type DiffResult struct {
 	TopicsChecked    int
 	TopicsWouldFetch int
 	TopicsStale      int
+	TopicsBroken     int
 	BodiesWouldFetch int
 	PerCourse        []CourseDiff
 }
 
-// CourseDiff summarises a single course's planned work.
 type CourseDiff struct {
 	CourseID         string
 	CourseName       string
@@ -246,6 +251,7 @@ type CourseDiff struct {
 	TopicsNew        int
 	TopicsModified   int
 	TopicsUnchanged  int
+	TopicsBroken     int
 	BodiesWouldFetch int
 	WouldFetchIDs    []int
 }
@@ -577,6 +583,8 @@ func Run(opts Options) (Result, error) {
 		result.TopicsChecked += stale.checked
 		result.TopicsFetched += stale.fetched
 		result.TopicsStale += stale.stale
+		result.TopicsFailed += stale.failed
+		result.TopicsSkipped += stale.skipped
 		result.BodiesFetched += stale.bodiesNew
 		result.BodiesReused += stale.bodiesReused
 		result.BodiesFailed += stale.bodiesErr
@@ -598,8 +606,9 @@ func Run(opts Options) (Result, error) {
 		})
 
 		if opts.Verbose {
-			fmt.Fprintf(os.Stderr, "[archive] %s (%s): %d topics, %d fetched, %d stale, +%d bodies, %d reused, %d errors\n",
+			fmt.Fprintf(os.Stderr, "[archive] %s (%s): %d topics, %d fetched, %d stale, %d failed, %d broken, +%d bodies, %d reused, %d errors\n",
 				c.OrgUnitId, c.Code, stale.checked, stale.fetched, stale.stale,
+				stale.failed, stale.skipped,
 				stale.bodiesNew, stale.bodiesReused, stale.bodiesErr)
 		}
 	}
@@ -677,6 +686,7 @@ func Diff(opts Options) (DiffResult, error) {
 		result.TopicsChecked += cd.TopicsTotal
 		result.TopicsWouldFetch += cd.TopicsNew + cd.TopicsModified
 		result.TopicsStale += cd.TopicsUnchanged
+		result.TopicsBroken += cd.TopicsBroken
 		result.BodiesWouldFetch += cd.BodiesWouldFetch
 		result.PerCourse = append(result.PerCourse, cd)
 
@@ -719,6 +729,10 @@ func diffCourse(opts Options, c Course) (CourseDiff, error) {
 	}
 	for _, t := range flattenTopics(toc.Modules) {
 		cd.TopicsTotal++
+		if t.IsBroken {
+			cd.TopicsBroken++
+			continue
+		}
 		newMod := parseD2LTime(t.LastModifiedDate)
 		ti, existed := ci.Topics[t.TopicId]
 		isFile := topicType(t) == "File" && t.Url != nil && *t.Url != ""
@@ -757,8 +771,9 @@ func diffCourse(opts Options, c Course) (CourseDiff, error) {
 // when DownloadFiles is true — otherwise all three stay zero and the
 // summary line simply omits the bodies section.
 type courseStats struct {
-	stale, checked, fetched            int
-	bodiesNew, bodiesReused, bodiesErr int
+	stale, checked, fetched             int
+	bodiesNew, bodiesReused, bodiesErr  int
+	failed, skipped                     int
 }
 
 // archiveCourse runs a single course's archive pass and returns the
@@ -794,6 +809,10 @@ func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats,
 	var work []queued
 	for _, t := range flattenTopics(toc.Modules) {
 		s.checked++
+		if t.IsBroken {
+			s.skipped++
+			continue
+		}
 		newMod := parseD2LTime(t.LastModifiedDate)
 		ti, existed := ci.Topics[t.TopicId]
 		isFile := topicType(t) == "File" && t.Url != nil && *t.Url != ""
@@ -824,7 +843,14 @@ func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats,
 			})
 			body, ferr := fetchTopicFor(opts.baseURL(), opts.Jar, c.OrgUnitId, q.topicID)
 			if ferr != nil {
-				return s, fmt.Errorf("fetch topic %d: %w", q.topicID, ferr)
+				if errors.Is(ferr, errSessionExpired) {
+					return s, ferr
+				}
+				s.failed++
+				if opts.Verbose {
+					fmt.Fprintf(os.Stderr, "[archive]   topic %d: fetch failed: %v (continuing)\n", q.topicID, ferr)
+				}
+				continue
 			}
 			uuid, size, werr := SaveBlob(opts.Root, body)
 			if werr != nil {
@@ -1017,6 +1043,9 @@ func fetchTocFor(base, orgUnitID string, jar *cookiejar.Jar) (content.TocRespons
 		return content.TocResponse{}, err
 	}
 	if res.StatusCode != 200 {
+		if res.StatusCode == 401 || res.StatusCode == 403 {
+			return content.TocResponse{}, errSessionExpired
+		}
 		return content.TocResponse{}, fmt.Errorf("D2L API returned %d %s for %s", res.StatusCode, res.Status, res.Request.URL)
 	}
 	var toc content.TocResponse
@@ -1036,6 +1065,9 @@ func fetchTopicFor(base string, jar *cookiejar.Jar, orgUnitID string, topicID in
 		return nil, err
 	}
 	if res.StatusCode != 200 {
+		if res.StatusCode == 401 || res.StatusCode == 403 {
+			return nil, errSessionExpired
+		}
 		return nil, fmt.Errorf("D2L API returned %d %s for topic %d", res.StatusCode, res.Status, topicID)
 	}
 	body, err := httpclient.BodyBytes(res)
