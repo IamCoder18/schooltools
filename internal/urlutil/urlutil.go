@@ -55,7 +55,7 @@ func encodePath(p string) string {
 		case c == '%':
 			b.WriteString("%25")
 		case mustEscape(c):
-			b.WriteString(fmt.Sprintf("%%%02X", c))
+			fmt.Fprintf(&b, "%%%02X", c)
 		default:
 			b.WriteByte(c)
 		}
