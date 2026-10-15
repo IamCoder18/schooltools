@@ -1,7 +1,9 @@
 package archive
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -367,7 +369,9 @@ func fileExists(p string) bool {
 		return false
 	}
 	_, err := os.Stat(p)
-	return err == nil
+	// A permission or I/O error means the blob might well be there;
+	// only positive non-existence counts as missing.
+	return err == nil || !errors.Is(err, fs.ErrNotExist)
 }
 
 type Status struct {
@@ -440,7 +444,11 @@ func LoadStatus(root string) (Status, error) {
 			if t.Type == "" || t.Type == "File" {
 				st.FileTopics++
 			}
-			if t.CurrentBody != "" && fileExists(BodyPath(root, t.CurrentBody)) {
+			// Only file-compatible topics are counted here so
+			// BodiesPresent matches MissingBodies' denominator: a
+			// non-File topic that still holds a body is reported by
+			// FileTopics/MissingBodies as missing.
+			if t.CurrentBody != "" && (t.Type == "" || t.Type == "File") && fileExists(BodyPath(root, t.CurrentBody)) {
 				st.BodiesPresent++
 			}
 		}
