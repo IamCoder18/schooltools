@@ -99,10 +99,17 @@ func TestFileTopicsHasBodyChecksDisk(t *testing.T) {
 	if err := SaveCourseIndex(dir, "1", ci); err != nil {
 		t.Fatalf("SaveCourseIndex: %v", err)
 	}
-
+	if err := SaveIndex(dir, &Index{Version: SchemaVersion, Courses: map[string]*IndexEntry{
+		"1": {OrgUnitId: "1", Code: "SAF"},
+	}}); err != nil {
+		t.Fatalf("SaveIndex: %v", err)
+	}
 	topics, err := FileTopics(dir, "")
 	if err != nil {
 		t.Fatalf("FileTopics: %v", err)
+	}
+	if len(topics) != 2 {
+		t.Fatalf("FileTopics returned %d topics, want 2", len(topics))
 	}
 	for _, ft := range topics {
 		want := ft.TopicID == 1
