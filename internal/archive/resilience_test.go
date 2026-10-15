@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/aarav/schooltools/internal/content"
@@ -44,7 +45,7 @@ func TestRunSurvivesBrokenAndFailingTopics(t *testing.T) {
 	if res.TopicsFailed != 1 {
 		t.Errorf("TopicsFailed=%d, want 1 (404 topic)", res.TopicsFailed)
 	}
-	if calls := f.topicCalls[6002]; calls != 0 {
+	if calls := f.topicCallCount(6002); calls != 0 {
 		t.Errorf("broken topic 6002 was fetched %d times, want 0 (must be skipped without an API call)", calls)
 	}
 
@@ -68,6 +69,90 @@ func TestRunSurvivesBrokenAndFailingTopics(t *testing.T) {
 	}
 	if res2.TopicsFetched != 0 || res2.TopicsSkipped != 1 || res2.TopicsFailed != 1 {
 		t.Errorf("second run: fetched=%d skipped=%d failed=%d, want 0/1/1", res2.TopicsFetched, res2.TopicsSkipped, res2.TopicsFailed)
+	}
+}
+
+func TestRunAbortsAfterConsecutiveTransportFailures(t *testing.T) {
+	f := newFakeD2L(t)
+	var topics []content.TocTopic
+	for i := 7001; i <= 7006; i++ {
+		topics = append(topics, content.TocTopic{TopicId: i, Title: "T", LastModifiedDate: "2026-03-01T00:00:00Z"})
+		f.hijackTopics[i] = true
+	}
+	f.courses = []d2lCourse{{OrgUnitId: json.Number("4700"), Name: "Bio", Code: "BIO", IsActive: true}}
+	f.tocs["4700"] = content.TocResponse{Modules: []content.TocModule{{ModuleId: 1, Topics: topics}}}
+	srv := httptest.NewServer(f.handler())
+	defer srv.Close()
+
+	_, err := Run(Options{Root: t.TempDir(), Jar: newJar(t), BaseURL: srv.URL})
+	if err == nil {
+		t.Fatal("expected the run to abort on consecutive transport failures")
+	}
+	if !strings.Contains(err.Error(), "consecutive transport failures") {
+		t.Errorf("err = %v, want a consecutive-transport-failure abort", err)
+	}
+	// Six topics were queued; the pass must stop at the bound, not
+	// grind through all of them during an outage.
+	attempts := 0
+	for i := 7001; i <= 7006; i++ {
+		attempts += f.topicCallCount(i)
+	}
+	if attempts > maxConsecutiveTransportFailures {
+		t.Errorf("%d topic attempts, want at most %d", attempts, maxConsecutiveTransportFailures)
+	}
+}
+
+func TestRunToleratesHTTPFailuresAfterTransportBounded(t *testing.T) {
+	// HTTP failures must not consume the transport budget: a mix of
+	// 404s and one transport error keeps the pass going.
+	f := newFakeD2L(t)
+	f.courses = []d2lCourse{{OrgUnitId: json.Number("4701"), Name: "Bio", Code: "BIO", IsActive: true}}
+	f.tocs["4701"] = content.TocResponse{Modules: []content.TocModule{{ModuleId: 1, Topics: []content.TocTopic{
+		{TopicId: 7101, Title: "Deleted", LastModifiedDate: "2026-03-01T00:00:00Z"},
+		{TopicId: 7102, Title: "Deleted", LastModifiedDate: "2026-03-01T00:00:00Z"},
+		{TopicId: 7103, Title: "Deleted", LastModifiedDate: "2026-03-01T00:00:00Z"},
+		{TopicId: 7104, Title: "Deleted", LastModifiedDate: "2026-03-01T00:00:00Z"},
+		{TopicId: 7105, Title: "Deleted", LastModifiedDate: "2026-03-01T00:00:00Z"},
+		{TopicId: 7106, Title: "Deleted", LastModifiedDate: "2026-03-01T00:00:00Z"},
+		{TopicId: 7107, Title: "Deleted", LastModifiedDate: "2026-03-01T00:00:00Z"},
+	}}}}
+	f.hijackTopics[7107] = true
+	srv := httptest.NewServer(f.handler())
+	defer srv.Close()
+
+	res, err := Run(Options{Root: t.TempDir(), Jar: newJar(t), BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("HTTP failures must not abort the pass: %v", err)
+	}
+	if res.TopicsFailed != 7 {
+		t.Errorf("TopicsFailed=%d, want 7", res.TopicsFailed)
+	}
+}
+
+func TestRunAbortsOnExpiredToc(t *testing.T) {
+	f := newFakeD2L(t)
+	f.courses = []d2lCourse{{OrgUnitId: json.Number("4610"), Name: "Bio", Code: "BIO", IsActive: true}}
+	f.tocs["4610"] = content.TocResponse{Modules: []content.TocModule{{ModuleId: 1, Topics: []content.TocTopic{
+		{TopicId: 7201, Title: "Cells", LastModifiedDate: "2026-03-01T00:00:00Z"},
+	}}}}
+	f.tocStatus = http.StatusForbidden
+	srv := httptest.NewServer(f.handler())
+	defer srv.Close()
+
+	_, err := Run(Options{Root: t.TempDir(), Jar: newJar(t), BaseURL: srv.URL})
+	if err == nil {
+		t.Fatal("expected the run to abort when the TOC request 403s")
+	}
+	if !errors.Is(err, errSessionExpired) {
+		t.Errorf("Run err = %v, want errSessionExpired", err)
+	}
+
+	_, derr := Diff(Options{Root: t.TempDir(), Jar: newJar(t), BaseURL: srv.URL, CourseIDs: []string{"4610"}})
+	if derr == nil {
+		t.Fatal("expected Diff to abort when the TOC request 403s")
+	}
+	if !errors.Is(derr, errSessionExpired) {
+		t.Errorf("Diff err = %v, want errSessionExpired", derr)
 	}
 }
 

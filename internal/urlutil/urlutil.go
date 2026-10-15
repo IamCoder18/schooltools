@@ -11,9 +11,13 @@ import (
 
 // ResolveD2L resolves a D2L content URL against a base URL. Relative
 // references and absolute URLs are both percent-encoded first, so that
-// url.Parse cannot fail on them and no character is silently
-// reinterpreted as a URL fragment or query delimiter. A '?' is treated
-// as a path character: D2L file URLs never carry a query string.
+// no character is silently reinterpreted as a URL fragment or query
+// delimiter. A '?' is treated as a path character: D2L file URLs never
+// carry a query string. Relative references that are not already
+// path-absolute (no leading '/', './' or '../') are resolved against the
+// base's directory with a './' prefix, which keeps url.Parse from
+// mistaking a colon in the first segment ("Week 1: Intro/…") for a URL
+// scheme.
 func ResolveD2L(base, raw string) (string, error) {
 	if isAbs(raw) {
 		return cleanAbs(raw), nil
@@ -22,7 +26,11 @@ func ResolveD2L(base, raw string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parse base: %w", err)
 	}
-	ref, err := url.Parse(CleanPath(raw))
+	p := CleanPath(raw)
+	if !strings.HasPrefix(p, "/") && !strings.HasPrefix(p, "./") && !strings.HasPrefix(p, "../") {
+		p = "./" + p
+	}
+	ref, err := url.Parse(p)
 	if err != nil {
 		return "", fmt.Errorf("parse %s: %w", raw, err)
 	}

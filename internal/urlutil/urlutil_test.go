@@ -62,6 +62,31 @@ func TestResolveD2LHashFilename(t *testing.T) {
 	}
 }
 
+func TestResolveD2LRelativeRefWithColon(t *testing.T) {
+	// url.Parse rejects a reference whose first segment contains a colon
+	// ("Week 1: Intro/…" looks like a scheme). The './' prefix keeps the
+	// colon inside a path segment.
+	got, err := ResolveD2L("https://d2l.cbe.ab.ca/d2l/le/content/123/view", "Week 1: Intro/notes.pdf")
+	if err != nil {
+		t.Fatalf("ResolveD2L: %v", err)
+	}
+	want := "https://d2l.cbe.ab.ca/d2l/le/content/123/Week%201:%20Intro/notes.pdf"
+	if got != want {
+		t.Errorf("ResolveD2L = %q, want %q", got, want)
+	}
+}
+
+func TestResolveD2LRelativeRefWithSpaceBeforeColon(t *testing.T) {
+	got, err := ResolveD2L("https://d2l.cbe.ab.ca", "Unit 3: Ratios.pdf")
+	if err != nil {
+		t.Fatalf("ResolveD2L: %v", err)
+	}
+	want := "https://d2l.cbe.ab.ca/Unit%203:%20Ratios.pdf"
+	if got != want {
+		t.Errorf("ResolveD2L = %q, want %q", got, want)
+	}
+}
+
 func TestResolveD2LAbsoluteURLIsCleaned(t *testing.T) {
 	got, err := ResolveD2L("https://d2l.cbe.ab.ca", "https://files.example.com/a b#c.pdf")
 	if err != nil {

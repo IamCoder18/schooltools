@@ -88,6 +88,25 @@ import (
 
 var errSessionExpired = errors.New("session expired; run 'schooltools login'")
 
+// errTransport marks a transport-level failure (connection refused, DNS
+// failure, timeout, reset) rather than an HTTP status response. Callers
+// use it to abort a pass that is only re-hitting a dead network, while
+// continuing past per-topic HTTP failures such as a 404 on a deleted
+// topic.
+var errTransport = errors.New("transport failure")
+
+type transportError struct{ err error }
+
+func (e *transportError) Error() string { return fmt.Sprintf("transport: %v", e.err) }
+func (e *transportError) Unwrap() error { return e.err }
+func (e *transportError) Is(target error) bool { return target == errTransport }
+
+// maxConsecutiveTransportFailures bounds how many transport-level
+// failures in a row archiveCourseV2 tolerates before aborting the run.
+// Per-topic HTTP failures (a deleted topic, a stale TOC entry) do not
+// count toward it.
+const maxConsecutiveTransportFailures = 5
+
 const (
 	// SchemaVersion is bumped when the on-disk layout changes in a way that
 	// would confuse older readers. v3 added bodies (blobs/<sha256>.bin) and
@@ -786,6 +805,7 @@ func archiveCourse(opts Options, c Course, now func() time.Time) (courseStats, e
 // archiveCourseV2 is the working implementation.
 func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats, error) {
 	var s courseStats
+	transportFails := 0
 	toc, err := fetchTocFor(opts.baseURL(), c.OrgUnitId, opts.Jar)
 	if err != nil {
 		return s, err
@@ -846,12 +866,20 @@ func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats,
 				if errors.Is(ferr, errSessionExpired) {
 					return s, ferr
 				}
+				if errors.Is(ferr, errTransport) {
+					transportFails++
+					if transportFails >= maxConsecutiveTransportFailures {
+						return s, fmt.Errorf("network unreachable: aborted after %d consecutive transport failures (last: %v)",
+							transportFails, ferr)
+					}
+				}
 				s.failed++
 				if opts.Verbose {
 					fmt.Fprintf(os.Stderr, "[archive]   topic %d: fetch failed: %v (continuing)\n", q.topicID, ferr)
 				}
 				continue
 			}
+			transportFails = 0
 			uuid, size, werr := SaveBlob(opts.Root, body)
 			if werr != nil {
 				return s, werr
@@ -896,12 +924,20 @@ func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats,
 			if errors.Is(berr, errSessionExpired) {
 				return s, berr
 			}
+			if errors.Is(berr, errTransport) {
+				transportFails++
+				if transportFails >= maxConsecutiveTransportFailures {
+					return s, fmt.Errorf("network unreachable: aborted after %d consecutive transport failures (last: %v)",
+						transportFails, berr)
+				}
+			}
 			if opts.Verbose {
 				fmt.Fprintf(os.Stderr, "[archive]   body %d: %v (continuing)\n", q.topicID, berr)
 			}
 			s.bodiesErr++
 			continue
 		}
+		transportFails = 0
 		sha := sha256.Sum256(bodyBytes)
 		shaHex := hex.EncodeToString(sha[:])
 		// Re-save when the queued reason was "body-missing" (the existing
@@ -978,15 +1014,16 @@ func downloadFileBody(jar *cookiejar.Jar, rawURL, base string) ([]byte, string, 
 	if base == "" {
 		base = ua.D2LBase
 	}
-	rawURL, rerr := urlutil.ResolveD2L(base, rawURL)
+	resolved, rerr := urlutil.ResolveD2L(base, rawURL)
 	if rerr != nil {
 		return nil, "", fmt.Errorf("resolve %s: %w", rawURL, rerr)
 	}
+	rawURL = resolved
 	res, err := httpclient.FollowRedirects(rawURL, jar, httpclient.FetchOptions{
 		Headers: map[string]string{"Accept": "*/*"},
 	})
 	if err != nil {
-		return nil, "", err
+		return nil, "", &transportError{err}
 	}
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode/100 != 2 {
@@ -999,6 +1036,13 @@ func downloadFileBody(jar *cookiejar.Jar, rawURL, base string) ([]byte, string, 
 			msg = msg[:200] + "..."
 		}
 		return nil, "", fmt.Errorf("download %d %s for %s: %s", res.StatusCode, res.Status, rawURL, msg)
+	}
+	// An expired session redirects the download to the D2L login page,
+	// which answers 200 with HTML; that page must never be hashed as a
+	// topic body. (Content-Type is deliberately not checked: D2L serves
+	// real .html topic files as text/html.)
+	if ua.IsLoginURL(res.Request.URL.String()) {
+		return nil, "", errSessionExpired
 	}
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
@@ -1068,8 +1112,9 @@ func fetchTopicFor(base string, jar *cookiejar.Jar, orgUnitID string, topicID in
 		Headers: map[string]string{"Accept": "application/json"},
 	})
 	if err != nil {
-		return nil, err
+		return nil, &transportError{err}
 	}
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != 200 {
 		if res.StatusCode == 401 || res.StatusCode == 403 {
 			return nil, errSessionExpired
