@@ -315,6 +315,61 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `html.UnescapeString`, so the default text body decodes common
   named and numeric entities (`&`, `<`, `'`, `'`, …)
   rather than leaving them as raw HTML escape sequences.
+- **P1:** `archive update` aborted the entire pass on the first topic
+  whose metadata fetch failed. D2L keeps stale "broken" TOC entries
+  (`IsBroken: true`, 404 on the topics API) — one dead 2022 dropbox
+  link in a single course blocked every course queued after it from
+  archiving. Topics D2L flags broken are now skipped without an API
+  call, failed fetches are counted and retried on the next pass, and
+  only a 401/403 stops the run (reported as `session expired; run
+  'schooltools login'` instead of a raw status line). The update
+  summary and `--json` envelope gain `topicsFailed` / `topicsSkipped`
+  counters, and `--dry-run` reports broken topics so the plan matches
+  what a real pass does.
+- **P1:** `archive` status and `archive find` trusted the index's
+  `currentBody` pointer instead of the filesystem, so a store with
+  186 dangling pointers (see the 0.2.0 prune entry) reported
+  "Bodies: 326 present, 8 missing" while 186 blobs were actually
+  gone. `LoadStatus` now stats each blob; `find --with-bodies` gained
+  the `WithBodiesOnDisk` filter and `find --missing-bodies` also
+  matches topics whose pointer exists but whose blob does not.
+  `HasBody` on search hits and `FileTopic` reflects on-disk state.
+  `archive export` keeps the old pointer semantics so its
+  "skipped-missing-body" reporting is unchanged.
+- **P2:** D2L file-body URLs that contain unescaped path characters —
+  literal spaces, a bare `%` (`Acetic Acid, 5% (Vinegar).pdf`), `#` in
+  filenames (`Quiz #3 …`) — either failed `url.Parse` with
+  `invalid URL escape` or were truncated at the `#` into a URL
+  fragment and 404'd. The new `internal/urlutil` re-encodes the path
+  portion of a reference (preserving already-valid `%XX` sequences
+  and query strings) before it is resolved against the LMS base URL;
+  both `archive update`'s body downloads and `download` route
+  through it.
+- **P2:** `systemd status` dropped `systemctl list-timers` data rows
+  whose LAST column was a placeholder (a timer that never fired), so
+  fresh installs printed no next-run time at all, and mis-reported
+  UNIT/ACTIVATES when PASSED was a placeholder. The parser now
+  anchors on the trailing unit columns and treats placeholders
+  explicitly.
+- **P2:** `systemd install` printed the volatile-binary-path warning
+  straight to stderr instead of routing it through `Status.Warnings`
+  (invisible to `--json`); `Uninstall` built a `removed` slice it
+  never read; a service unit with no `ExecStart=` line at all is now
+  flagged by the legacy-ExecStart warning.
+
+### Security
+- **P1:** The login/auto-refresh HTTP debug dump (`<< Set-Cookie: …`
+  values, request URLs) was printed **unconditionally** on every form
+  POST — `fetchPost` didn't take `Options`, and every auto-refresh
+  path hard-codes `Verbose: false`. Any `archive update` or `login`
+  run against an expired session therefore leaked the ADFS
+  `SAMLRequest` URL and raw `d2lSessionVal` / `d2lSecureSessionVal`
+  cookie values to stderr (and into journald under the systemd
+  unit), violating the threat model in `SECURITY.md`. `fetchPost` now
+  dumps only behind `--verbose`, SAML parameters
+  (`SAMLRequest`/`SAMLResponse`/`RelayState`) are replaced with a
+  length marker even in verbose mode, and cookie values are
+  truncated the same way the per-hop dump truncates them.
 
 ## [0.2.0] - 2026-09-05
 
