@@ -98,10 +98,11 @@ func isVolatilePath(p string) bool {
 }
 
 // legacyExecStart reports whether the on-disk service unit still calls the
-// pre-archive-UX-redesign form (e.g. `archive` / `prune`). Parses each
-// ExecStart= directive (skipping comments and unrelated lines) and returns
-// true when none of them invoke `archive update`. A bare mention of
-// "archive update" in a Description= line cannot suppress the warning.
+// pre-archive-UX-redesign form (e.g. `archive` / `prune`), or is missing an
+// ExecStart line altogether. Parses each ExecStart= directive (skipping
+// comments and unrelated lines) and returns true when none of them invoke
+// `archive update`. A bare mention of "archive update" in a Description=
+// line cannot suppress the warning.
 func legacyExecStart(svcPath string) bool {
 	data, err := os.ReadFile(svcPath)
 	if err != nil {
@@ -123,7 +124,7 @@ func legacyExecStart(svcPath string) bool {
 		}
 	}
 	if !anyExec {
-		return false
+		return true
 	}
 	return !anyUpdate
 }
@@ -190,9 +191,6 @@ func Install(opts InstallOptions) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	for _, w := range warnings {
-		fmt.Fprintln(os.Stderr, "warning:", w)
-	}
 	data := map[string]string{"ExecStart": execStart}
 	if err := renderTemplate("schooltools-archive.service.tmpl", data, svcPath); err != nil {
 		return Status{}, err
@@ -209,7 +207,9 @@ func Install(opts InstallOptions) (Status, error) {
 		return Status{}, fmt.Errorf("enable --now %s failed: %w\n%s", TimerName, err, out)
 	}
 
-	return Query()
+	st, err := Query()
+	st.Warnings = append(warnings, st.Warnings...)
+	return st, err
 }
 
 // Uninstall disables+stops the timer, then removes the unit files. Safe to
@@ -224,18 +224,10 @@ func Uninstall() (Status, error) {
 
 	svcPath := filepath.Join(dir, ServiceName)
 	tmrPath := filepath.Join(dir, TimerName)
-	removed := []string{}
-	if err := os.Remove(svcPath); err == nil {
-		removed = append(removed, svcPath)
-	}
-	if err := os.Remove(tmrPath); err == nil {
-		removed = append(removed, tmrPath)
-	}
+	_ = os.Remove(svcPath)
+	_ = os.Remove(tmrPath)
 	if _, err := runSystemctl("daemon-reload"); err != nil {
 		return Status{}, fmt.Errorf("daemon-reload after uninstall failed: %w", err)
-	}
-	if len(removed) == 0 {
-		return Status{UserDir: dir}, nil
 	}
 	return Status{UserDir: dir}, nil
 }
@@ -261,7 +253,7 @@ func Query() (Status, error) {
 	}
 	if legacyExecStart(svcPath) {
 		st.Warnings = append(st.Warnings,
-			"service unit uses a pre-archive-update ExecStart; rerun `schooltools systemd install --force` to upgrade in place")
+			"service unit has no ExecStart or uses a pre-archive-update one; rerun `schooltools systemd install --force` to upgrade in place")
 	}
 
 	// is-enabled

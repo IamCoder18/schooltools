@@ -1,6 +1,10 @@
 package systemd
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestSplitTimerFieldsBothDatetimes(t *testing.T) {
 	f := []string{
@@ -118,5 +122,38 @@ func TestIsDayOfWeek(t *testing.T) {
 		if isDayOfWeek(s) {
 			t.Errorf("isDayOfWeek(%q) = true", s)
 		}
+	}
+}
+
+func TestLegacyExecStart(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		return p
+	}
+
+	cases := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"current unit", "[Service]\nExecStart=/usr/bin/schooltools archive update --no-auto-refresh\n", false},
+		{"bare archive", "[Service]\nExecStart=/usr/bin/schooltools archive\n", true},
+		{"no exec start", "[Unit]\nDescription=schooltools archive\n", true},
+		{"prune exec start", "[Service]\nExecStart=/usr/bin/schooltools archive prune --delete\n", true},
+		{"description mention only", "[Unit]\nDescription=runs archive update\n[Service]\nExecStart=/usr/bin/schooltools archive\n", true},
+		{"commented mention", "# ExecStart=/usr/bin/schooltools archive update\n[Service]\nExecStart=/usr/bin/schooltools archive\n", true},
+	}
+	for _, tc := range cases {
+		if got := legacyExecStart(write(tc.name, tc.content)); got != tc.want {
+			t.Errorf("legacyExecStart(%s) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	if legacyExecStart(filepath.Join(dir, "does-not-exist")) {
+		t.Error("a missing unit file should not be reported as legacy")
 	}
 }
