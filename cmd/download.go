@@ -317,9 +317,6 @@ func resolveFileURL(rawURL string) (string, error) {
 	if rawURL == "" {
 		return "", fmt.Errorf("empty url")
 	}
-	if strings.HasPrefix(rawURL, "http://") || strings.HasPrefix(rawURL, "https://") {
-		return rawURL, nil
-	}
 	return urlutil.ResolveD2L(ua.D2LBase, rawURL)
 }
 

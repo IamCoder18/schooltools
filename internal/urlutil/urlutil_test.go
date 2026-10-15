@@ -17,8 +17,7 @@ func TestCleanPath(t *testing.T) {
 		{"existing escapes preserved", "/c/KEY%20Practice.pdf", "/c/KEY%20Practice.pdf"},
 		{"trailing bare percent", "/c/100%", "/c/100%25"},
 		{"bare percent not followed by hex", "/c/50% off.pdf", "/c/50%25%20off.pdf"},
-		{"query string preserved", "/c/a b.pdf?download=1&x=2", "/c/a%20b.pdf?download=1&x=2"},
-		{"percent then query", "/c/a%2fb.pdf?x=1", "/c/a%2fb.pdf?x=1"},
+		{"question mark is a path character", "/c/What? Really.pdf?download=1", "/c/What%3F%20Really.pdf%3Fdownload=1"},
 		{"non-ascii bytes", "/c/café menu.pdf", "/c/caf%C3%A9%20menu.pdf"},
 	}
 	for _, tc := range cases {
@@ -63,14 +62,14 @@ func TestResolveD2LHashFilename(t *testing.T) {
 	}
 }
 
-func TestResolveD2LAbsolutePassthrough(t *testing.T) {
-	abs := "https://files.example.com/a%20b.pdf"
-	got, err := ResolveD2L("https://d2l.cbe.ab.ca", abs)
+func TestResolveD2LAbsoluteURLIsCleaned(t *testing.T) {
+	got, err := ResolveD2L("https://d2l.cbe.ab.ca", "https://files.example.com/a b#c.pdf")
 	if err != nil {
 		t.Fatalf("ResolveD2L: %v", err)
 	}
-	if got != abs {
-		t.Errorf("absolute URL rewritten: %q", got)
+	want := "https://files.example.com/a%20b%23c.pdf"
+	if got != want {
+		t.Errorf("ResolveD2L = %q, want %q", got, want)
 	}
 }
 

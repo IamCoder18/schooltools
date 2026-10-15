@@ -1,6 +1,6 @@
 // Package urlutil repairs the D2L content URLs that the LMS emits with
-// unescaped path characters (literal spaces, '#', stray '%') before they
-// are handed to net/http.
+// unescaped path characters (literal spaces, '#', stray '%', '?') before
+// they are handed to net/http.
 package urlutil
 
 import (
@@ -9,13 +9,14 @@ import (
 	"strings"
 )
 
-// ResolveD2L resolves a D2L content URL against a base URL. Absolute URLs
-// are returned unchanged; relative references are percent-encoded first so
-// that url.Parse cannot fail on them and no character is silently
-// reinterpreted as a URL fragment.
+// ResolveD2L resolves a D2L content URL against a base URL. Relative
+// references and absolute URLs are both percent-encoded first, so that
+// url.Parse cannot fail on them and no character is silently
+// reinterpreted as a URL fragment or query delimiter. A '?' is treated
+// as a path character: D2L file URLs never carry a query string.
 func ResolveD2L(base, raw string) (string, error) {
 	if isAbs(raw) {
-		return raw, nil
+		return cleanAbs(raw), nil
 	}
 	b, err := url.Parse(base)
 	if err != nil {
@@ -28,19 +29,27 @@ func ResolveD2L(base, raw string) (string, error) {
 	return b.ResolveReference(ref).String(), nil
 }
 
-// CleanPath percent-encodes the path portion of a URL reference,
-// preserving escape sequences that are already valid. A query string
-// (everything from the first '?') is passed through untouched.
+// CleanPath percent-encodes a URL path, preserving escape sequences that
+// are already valid.
 func CleanPath(raw string) string {
-	path, query := raw, ""
-	if i := strings.IndexByte(raw, '?'); i >= 0 {
-		path, query = raw[:i], raw[i:]
-	}
-	return encodePath(path) + query
+	return encodePath(raw)
 }
 
 func isAbs(u string) bool {
 	return strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")
+}
+
+func cleanAbs(raw string) string {
+	i := strings.Index(raw, "://")
+	if i < 0 {
+		return CleanPath(raw)
+	}
+	rest := raw[i+3:]
+	slash := strings.IndexByte(rest, '/')
+	if slash < 0 {
+		return raw
+	}
+	return raw[:i+3] + rest[:slash] + CleanPath(rest[slash:])
 }
 
 func encodePath(p string) string {
@@ -71,7 +80,7 @@ func mustEscape(c byte) bool {
 		return true
 	}
 	switch c {
-	case '"', '#', '<', '>', '`', '{', '|', '}', '\\', '^':
+	case '"', '#', '<', '>', '?', '`', '{', '|', '}', '\\', '^':
 		return true
 	}
 	return false
