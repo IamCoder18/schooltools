@@ -139,7 +139,7 @@ func Run(opts Options) (Result, error) {
 		"AuthMethod": {"FormsAuthentication"},
 	}.Encode()
 
-	res, err := fetchPost(loginPostURL, body, adfsURL, jar)
+	res, err := fetchPost(loginPostURL, body, adfsURL, jar, opts)
 	if err != nil {
 		return Result{}, err
 	}
@@ -285,7 +285,7 @@ stage = newStage
 			hopsInStage = 0
 		}
 
-		res, err = fetchPost(postURL, postBody.Encode(), res.Request.URL.String(), jar)
+		res, err = fetchPost(postURL, postBody.Encode(), res.Request.URL.String(), jar, opts)
 		if err != nil {
 			return Result{}, err
 		}
@@ -522,14 +522,14 @@ func fetchGet(rawURL string, jar *cookiejar.Jar, referer string, opts Options) (
 	return out, err
 }
 
-func fetchPost(rawURL, body, referer string, jar *cookiejar.Jar) (*http.Response, error) {
+func fetchPost(rawURL, body, referer string, jar *cookiejar.Jar, opts Options) (*http.Response, error) {
 	res, err := httpclient.Fetch(rawURL, jar, httpclient.FetchOptions{
 		Method:  http.MethodPost,
 		Headers: map[string]string{"Content-Type": "application/x-www-form-urlencoded"},
 		Body:    body,
 		Referer: referer,
 	})
-	if res != nil && res.Request != nil {
+	if res != nil && res.Request != nil && opts.Verbose {
 		dumpReqHeaders(res.Request)
 		dumpRespSetCookies(res)
 	}
@@ -538,21 +538,23 @@ func fetchPost(rawURL, body, referer string, jar *cookiejar.Jar) (*http.Response
 
 // dumpRespSetCookies prints raw Set-Cookie header values verbatim — useful
 // for confirming whether the server actually sent Expires / Max-Age that our
-// cookie parser might be losing.
+// cookie parser might be losing. Values are truncated like the per-hop dump.
 func dumpRespSetCookies(res *http.Response) {
 	for _, sc := range res.Header.Values("Set-Cookie") {
-		fmt.Fprintf(os.Stderr, "             << Set-Cookie: %s\n", sc)
+		name, value, _ := strings.Cut(sc, "=")
+		fmt.Fprintf(os.Stderr, "             << Set-Cookie: %s=%s\n", name, truncateForLog(value))
 	}
 }
 
 // dumpReqHeaders prints the request headers in a compact form so verbose
 // mode shows what we actually sent to the server. Body is intentionally
-// omitted from the dump.
+// omitted from the dump, and SAML parameters are redacted from the URL
+// because the assertion is a bearer credential.
 func dumpReqHeaders(r *http.Request) {
 	if r == nil {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "           > %s %s\n", r.Method, r.URL.String())
+	fmt.Fprintf(os.Stderr, "           > %s %s\n", r.Method, redactSAML(r.URL.String()))
 	keys := []string{"User-Agent", "Accept", "Accept-Language", "Accept-Encoding",
 		"Referer", "Origin", "Content-Type", "Cache-Control",
 		"sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
@@ -563,6 +565,26 @@ func dumpReqHeaders(r *http.Request) {
 			fmt.Fprintf(os.Stderr, "             %s: %s\n", k, v)
 		}
 	}
+}
+
+func redactSAML(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "<unparseable url redacted>"
+	}
+	q := u.Query()
+	redacted := false
+	for _, k := range []string{"SAMLRequest", "SAMLResponse", "RelayState"} {
+		if v := q.Get(k); v != "" {
+			q.Set(k, fmt.Sprintf("<redacted %d bytes>", len(v)))
+			redacted = true
+		}
+	}
+	if !redacted {
+		return rawURL
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func isMFA(err error) bool {
