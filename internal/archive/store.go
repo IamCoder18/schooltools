@@ -26,13 +26,14 @@ type Resolved struct {
 }
 
 type SearchQuery struct {
-	Terms         string
-	Ext           string
-	CourseIDs     []string
-	Type          string
-	WithBodies    bool
-	MissingBodies bool
-	Limit         int
+	Terms            string
+	Ext              string
+	CourseIDs        []string
+	Type             string
+	WithBodies       bool
+	WithBodiesOnDisk bool
+	MissingBodies    bool
+	Limit            int
 }
 
 type SearchHit struct {
@@ -276,9 +277,12 @@ func (s *Store) Search(q SearchQuery) []SearchHit {
 		if q.WithBodies && t.CurrentBody == "" {
 			continue
 		}
+		if q.WithBodiesOnDisk && !s.bodyOnDisk(t) {
+			continue
+		}
 		if q.MissingBodies {
 			isFileCompatible := t.Type == "" || t.Type == "File"
-			if !isFileCompatible || t.CurrentBody != "" {
+			if !isFileCompatible || s.bodyOnDisk(t) {
 				continue
 			}
 		}
@@ -296,7 +300,7 @@ func (s *Store) Search(q SearchQuery) []SearchHit {
 			LastModified: t.LastModified,
 			Current:      t.Current,
 			CurrentBody:  t.CurrentBody,
-			HasBody:      t.CurrentBody != "",
+			HasBody:      s.bodyOnDisk(t),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -309,6 +313,10 @@ func (s *Store) Search(q SearchQuery) []SearchHit {
 		out = out[:q.Limit]
 	}
 	return out
+}
+
+func (s *Store) bodyOnDisk(t *TopicIndex) bool {
+	return t != nil && t.CurrentBody != "" && fileExists(BodyPath(s.Root, t.CurrentBody))
 }
 
 func (te *topicEntry) hayMatches(tokens []string) bool {
@@ -432,7 +440,7 @@ func LoadStatus(root string) (Status, error) {
 			if t.Type == "" || t.Type == "File" {
 				st.FileTopics++
 			}
-			if t.CurrentBody != "" {
+			if t.CurrentBody != "" && fileExists(BodyPath(root, t.CurrentBody)) {
 				st.BodiesPresent++
 			}
 		}

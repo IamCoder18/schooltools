@@ -102,8 +102,8 @@ func init() {
 
 	archiveFindCmd.Flags().StringVar(&archiveFindExt, "ext", "", "Filter by URL extension (e.g. pdf, docx)")
 	archiveFindCmd.Flags().StringVar(&archiveFindType, "type", "", "Filter by topic type (File, Link)")
-	archiveFindCmd.Flags().BoolVar(&archiveFindWith, "with-bodies", false, "Only show topics that have a file body archived")
-	archiveFindCmd.Flags().BoolVar(&archiveFindMiss, "missing-bodies", false, "Only show File topics whose body has never been archived")
+	archiveFindCmd.Flags().BoolVar(&archiveFindWith, "with-bodies", false, "Only show topics whose file body exists on disk")
+	archiveFindCmd.Flags().BoolVar(&archiveFindMiss, "missing-bodies", false, "Only show File topics whose file body is missing on disk")
 
 	archiveShowCmd.Flags().StringVar(&archiveShowKind, "kind", "", "Force the ref kind: metadata|body (default: auto-detect)")
 
@@ -614,8 +614,8 @@ var archiveFindCmd = &cobra.Command{
 		"type contains all whitespace-separated query tokens (case-insensitive).\n" +
 		"All tokens must match (AND). Use --ext to filter by file extension,\n" +
 		"--type File|Link to filter by topic type, --with-bodies for topics\n" +
-		"with an archived file body, --missing-bodies for File topics whose\n" +
-		"body has never been archived.\n\n" +
+		"whose file body exists on disk, --missing-bodies for File topics\n" +
+		"whose file body is missing on disk.\n\n" +
 		"Examples:\n" +
 		"  schooltools archive find safety contract\n" +
 		"  schooltools archive find --type File --ext pdf\n" +
@@ -632,12 +632,12 @@ func runArchiveFind(args []string) error {
 		return err
 	}
 	q := archive.SearchQuery{
-		Terms:         strings.Join(args, " "),
-		Ext:           archiveFindExt,
-		CourseIDs:     archiveCourses,
-		Type:          archiveFindType,
-		WithBodies:    archiveFindWith,
-		MissingBodies: archiveFindMiss,
+		Terms:            strings.Join(args, " "),
+		Ext:              archiveFindExt,
+		CourseIDs:        archiveCourses,
+		Type:             archiveFindType,
+		WithBodiesOnDisk: archiveFindWith,
+		MissingBodies:    archiveFindMiss,
 	}
 	hits := store.Search(q)
 

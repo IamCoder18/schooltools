@@ -1180,7 +1180,7 @@ func FileTopics(root, ext string) ([]FileTopic, error) {
 				Type:         t.Type,
 				LastModified: t.LastModified,
 				CurrentBody:  t.CurrentBody,
-				HasBody:      t.CurrentBody != "",
+				HasBody:      t.CurrentBody != "" && fileExists(BodyPath(root, t.CurrentBody)),
 			})
 		}
 	}
