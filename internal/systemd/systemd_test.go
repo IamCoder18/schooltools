@@ -99,6 +99,33 @@ func TestSplitTimerFieldsMultiTokenPassed(t *testing.T) {
 	}
 }
 
+func TestSplitTimerFieldsPlaceholderNextRealLast(t *testing.T) {
+	f := []string{
+		"-", "-",
+		"Wed", "2026-10-14", "20:00:55", "MDT", "23s", "ago",
+		"schooltools-archive.timer", "schooltools-archive.service",
+	}
+	next, left, last, passed, unit, activates, ok := splitTimerFields(f)
+	if !ok {
+		t.Fatal("expected ok for a placeholder-NEXT row")
+	}
+	if next != "-" {
+		t.Errorf("next = %q, want the placeholder", next)
+	}
+	if left != "" {
+		t.Errorf("left = %q, want empty", left)
+	}
+	if last != "Wed 2026-10-14 20:00:55 MDT" {
+		t.Errorf("last = %q, want the real last run", last)
+	}
+	if passed != "23s ago" {
+		t.Errorf("passed = %q", passed)
+	}
+	if unit != "schooltools-archive.timer" || activates != "schooltools-archive.service" {
+		t.Errorf("unit/activates = %q/%q", unit, activates)
+	}
+}
+
 func TestSplitTimerFieldsRejectsGarbage(t *testing.T) {
 	for _, f := range [][]string{
 		{},

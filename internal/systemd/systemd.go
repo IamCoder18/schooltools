@@ -290,9 +290,9 @@ func Query() (Status, error) {
 		if fields[0] == "NEXT" {
 			continue
 		}
-		// Summary lines: "1 timers listed.", "Pass --all ...", "0 loaded ...".
-		// Skip anything whose first field doesn't look like a day-of-week.
-		if !isDayOfWeek(fields[0]) {
+		// Summary lines ("1 timers listed.", "Pass --all …") and the header
+		// never carry the unit name; data rows always do.
+		if !strings.Contains(line, TimerName) {
 			continue
 		}
 		// We expect at least: <NEXT: 3 tokens + tz, 1 token for LEFT,
@@ -339,12 +339,28 @@ func splitTimerFields(f []string) (next, left, last, passed, unit, activates str
 	}
 	switch len(dows) {
 	case 1:
-		if len(rest) < 5 {
-			return
-		}
-		next = strings.Join(rest[:4], " ")
-		if rest[4] != timerPlaceholder {
-			left = rest[4]
+		if dows[0] == 0 {
+			if len(rest) < 5 {
+				return
+			}
+			next = strings.Join(rest[:4], " ")
+			if rest[4] != timerPlaceholder {
+				left = rest[4]
+			}
+		} else {
+			if dows[0]+4 > len(rest) {
+				return
+			}
+			next = strings.Join(rest[:dows[0]-1], " ")
+			if rest[dows[0]-1] != timerPlaceholder {
+				left = rest[dows[0]-1]
+			}
+			last = strings.Join(rest[dows[0]:dows[0]+4], " ")
+			mid := rest[dows[0]+4:]
+			if len(mid) == 1 && mid[0] == timerPlaceholder {
+				mid = nil
+			}
+			passed = strings.Join(mid, " ")
 		}
 	case 2:
 		if dows[1]+4 > len(rest) {
