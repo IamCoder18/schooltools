@@ -321,89 +321,56 @@ func Query() (Status, error) {
 	return st, nil
 }
 
+const timerPlaceholder = "-"
+
 // splitTimerFields groups a token slice from a `list-timers` data row into
-// the six semantic columns. Robust to either layout:
-//   - NEXT is `-` (timer never fired):  firstDOW is at the LAST position
-//   - NEXT is a real datetime:           firstDOW is at position 0
+// the six semantic columns. The row layout is:
 //
-// We anchor on the LAST datetime (second day-of-week token) which is always
-// present, then derive everything else relative to it.
+//	<NEXT: 4 tokens>  <LEFT: 1 token>  <LAST: 4 tokens | "-">  <PASSED: "N ago" | "-">  <UNIT>  <ACTIVATES>
+//
+// The final two tokens are always UNIT and ACTIVATES, so they anchor the
+// parse. LAST and PASSED are placeholders until the timer has fired at
+// least once; a placeholder PASSED must not shift the UNIT/ACTIVATES
+// columns.
 func splitTimerFields(f []string) (next, left, last, passed, unit, activates string, ok bool) {
-	if len(f) < 4 {
+	if len(f) < 6 {
 		return
 	}
-	// Locate the two day-of-week tokens. LAST always has 4 tokens
-	// (DayOfWeek YYYY-MM-DD HH:MM:SS TZ), so its DOW marks a clean split.
-	firstDOW := -1
-	secondDOW := -1
-	for i, tok := range f {
+	unit, activates = f[len(f)-2], f[len(f)-1]
+	rest := f[:len(f)-2]
+
+	var dows []int
+	for i, tok := range rest {
 		if isDayOfWeek(tok) {
-			if firstDOW == -1 {
-				firstDOW = i
-			} else if secondDOW == -1 {
-				secondDOW = i
-				break
-			}
+			dows = append(dows, i)
 		}
 	}
-	if firstDOW == -1 || secondDOW == -1 {
+	switch len(dows) {
+	case 1:
+		if len(rest) < 5 {
+			return
+		}
+		next = strings.Join(rest[:4], " ")
+		if rest[4] != timerPlaceholder {
+			left = rest[4]
+		}
+	case 2:
+		if dows[1]+4 > len(rest) {
+			return
+		}
+		next = strings.Join(rest[:4], " ")
+		if rest[4] != timerPlaceholder {
+			left = rest[4]
+		}
+		last = strings.Join(rest[dows[1]:dows[1]+4], " ")
+		mid := rest[dows[1]+4:]
+		if len(mid) == 1 && mid[0] == timerPlaceholder {
+			mid = nil
+		}
+		passed = strings.Join(mid, " ")
+	default:
 		return
 	}
-	// last = 4 tokens starting at secondDOW
-	lastEnd := secondDOW + 4
-	if lastEnd > len(f) {
-		return
-	}
-	last = strings.Join(f[secondDOW:lastEnd], " ")
-
-	// next = tokens before secondDOW. Two sub-cases:
-	//   - firstDOW == 0: NEXT is a full datetime at f[0:4], LEFT is f[4]
-	//   - firstDOW > 0:  NEXT is f[0:firstDOW] (placeholder or just "-" with
-	//     nothing after), LEFT would be the next field after that
-	if firstDOW == 0 {
-		// Real datetime
-		if secondDOW < 4 {
-			return // malformed: NEXT datetime would overlap LAST
-		}
-		next = strings.Join(f[0:4], " ")
-		if 4 < secondDOW {
-			left = f[4]
-		}
-	} else {
-		// Placeholder (or short). firstDOW > 0 means f[0] is the placeholder.
-		next = strings.Join(f[0:firstDOW], " ")
-		if firstDOW+1 < secondDOW {
-			left = f[firstDOW+1]
-		}
-	}
-
-	// passed = tokens after LAST, up to and including the "ago" sentinel.
-	// `systemctl list-timers` renders relative times in many shapes:
-	// "5s", "1min", "2h", "1min 42s", "3 days 2h", etc. The only stable
-	// boundary is the trailing "ago".
-	passedStart := lastEnd
-	passedEnd := -1
-	for i := passedStart; i < len(f)-1; i++ {
-		if f[i+1] == "ago" {
-			passedEnd = i + 2 // include the "ago"
-			break
-		}
-	}
-	if passedEnd == -1 {
-		// No "ago" sentinel — leave Passed empty.
-		passed = ""
-		passedEnd = passedStart
-	} else {
-		passed = strings.Join(f[passedStart:passedEnd], " ")
-	}
-
-	// unit, activates at the tail.
-	tail := f[passedEnd:]
-	if len(tail) < 2 {
-		return
-	}
-	unit = tail[0]
-	activates = tail[1]
 	ok = true
 	return
 }
