@@ -136,7 +136,11 @@ func printSystemdStatus(action string, st systemd.Status) error {
 			_, _ = fmt.Fprintf(tw, "Next run:\t%s (in %s)\n", st.Next, st.Left)
 		}
 		if st.Last != "" {
-			_, _ = fmt.Fprintf(tw, "Last run:\t%s (%s)\n", st.Last, st.Passed)
+			if st.Passed != "" {
+				_, _ = fmt.Fprintf(tw, "Last run:\t%s (%s)\n", st.Last, st.Passed)
+			} else {
+				_, _ = fmt.Fprintf(tw, "Last run:\t%s\n", st.Last)
+			}
 		}
 		writeWarnings()
 		_, _ = fmt.Fprintln(tw, "")
@@ -157,7 +161,11 @@ func printSystemdStatus(action string, st systemd.Status) error {
 			_, _ = fmt.Fprintf(tw, "Next run:\t%s (in %s)\n", st.Next, st.Left)
 		}
 		if st.Last != "" {
-			_, _ = fmt.Fprintf(tw, "Last run:\t%s (%s)\n", st.Last, st.Passed)
+			if st.Passed != "" {
+				_, _ = fmt.Fprintf(tw, "Last run:\t%s (%s)\n", st.Last, st.Passed)
+			} else {
+				_, _ = fmt.Fprintf(tw, "Last run:\t%s\n", st.Last)
+			}
 		}
 		if len(st.TimerOutput) > 0 {
 			_, _ = fmt.Fprintln(tw, "")

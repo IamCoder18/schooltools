@@ -89,7 +89,7 @@ func Run(opts Options) (Result, error) {
 		return Result{}, stderrors.New("NO_LOCATION", "first redirect had no Location")
 	}
 	adfsURL := resolve(loc1, r1.Request.URL.String())
-	verbose(opts, fmt.Sprintf("[stage %s] %d -> %s", StageD2LToADFS, r1.StatusCode, adfsURL))
+	verbose(opts, fmt.Sprintf("[stage %s] %d -> %s", StageD2LToADFS, r1.StatusCode, redactSAML(adfsURL)))
 	origins[originOf(adfsURL)] = struct{}{}
 
 	r2, err := fetchGet(adfsURL, jar, r1.Request.URL.String(), opts)
@@ -102,7 +102,7 @@ func Run(opts Options) (Result, error) {
 			fmt.Sprintf("ADFS login page returned %d", r2.StatusCode))
 	}
 	if opts.Verbose {
-		fmt.Fprintf(os.Stderr, "[2] %d %s\n", r2.StatusCode, r2.Request.URL.String())
+		fmt.Fprintf(os.Stderr, "[2] %d %s\n", r2.StatusCode, redactSAML(r2.Request.URL.String()))
 	}
 	loginHTML, err := io.ReadAll(r2.Body)
 	if err != nil {
@@ -139,12 +139,12 @@ func Run(opts Options) (Result, error) {
 		"AuthMethod": {"FormsAuthentication"},
 	}.Encode()
 
-	res, err := fetchPost(loginPostURL, body, adfsURL, jar)
+	res, err := fetchPost(loginPostURL, body, adfsURL, jar, opts)
 	if err != nil {
 		return Result{}, err
 	}
 	if opts.Verbose {
-		fmt.Fprintf(os.Stderr, "[3] %d %s\n", res.StatusCode, res.Request.URL.String())
+		fmt.Fprintf(os.Stderr, "[3] %d %s\n", res.StatusCode, redactSAML(res.Request.URL.String()))
 	}
 
 	stage := StageADFSForms
@@ -162,16 +162,16 @@ func Run(opts Options) (Result, error) {
 		}
 		hopsInStage++
 		hopsTotal++
-verbose(opts, fmt.Sprintf("[hop %d] %s #%d: %d %s", hopsTotal, stage, hopsInStage, res.StatusCode, res.Request.URL.String()))
-	if opts.Verbose {
-		if loc := res.Header.Get("Location"); loc != "" {
-			fmt.Fprintf(os.Stderr, "           location: %s\n", loc)
+verbose(opts, fmt.Sprintf("[hop %d] %s #%d: %d %s", hopsTotal, stage, hopsInStage, res.StatusCode, redactSAML(res.Request.URL.String())))
+		if opts.Verbose {
+			if loc := res.Header.Get("Location"); loc != "" {
+				fmt.Fprintf(os.Stderr, "           location: %s\n", redactSAML(loc))
+			}
+			for _, sc := range res.Cookies() {
+				fmt.Fprintf(os.Stderr, "           set-cookie: %s=<redacted %d bytes> domain=%q path=%q expires=%v secure=%v httponly=%v\n",
+					sc.Name, len(sc.Value), sc.Domain, sc.Path, sc.Expires, sc.Secure, sc.HttpOnly)
+			}
 		}
-		for _, sc := range res.Cookies() {
-			fmt.Fprintf(os.Stderr, "           set-cookie: %s=%s domain=%q path=%q expires=%v secure=%v httponly=%v\n",
-				sc.Name, truncateForLog(sc.Value), sc.Domain, sc.Path, sc.Expires, sc.Secure, sc.HttpOnly)
-		}
-	}
 	origins[originOf(res.Request.URL.String())] = struct{}{}
 
 		current := httpclient.CookiesForHost(jar, res.Request.URL.Host)
@@ -199,7 +199,7 @@ verbose(opts, fmt.Sprintf("[hop %d] %s #%d: %d %s", hopsTotal, stage, hopsInStag
 				return Result{}, stderrors.New("NO_LOCATION", fmt.Sprintf("Redirect %d with no Location", res.StatusCode))
 			}
 			nextURL := resolve(loc, res.Request.URL.String())
-			verbose(opts, "           -> "+nextURL)
+			verbose(opts, "           -> "+redactSAML(nextURL))
 			newStage := stageFor(nextURL, stage)
 			if newStage != stage {
 stage = newStage
@@ -271,7 +271,7 @@ stage = newStage
 			postBody.Set(k, v)
 		}
 		postURL := resolve(formAction, res.Request.URL.String())
-		verbose(opts, fmt.Sprintf("           POST %s (%d fields)", postURL, len(postBody)))
+		verbose(opts, fmt.Sprintf("           POST %s (%d fields)", redactSAML(postURL), len(postBody)))
 
 		lower := strings.ToLower(postURL)
 		isSAMLPush := strings.Contains(lower, "/saml/") || strings.Contains(lower, "samllogin") || strings.Contains(lower, "samlresponse")
@@ -285,7 +285,7 @@ stage = newStage
 			hopsInStage = 0
 		}
 
-		res, err = fetchPost(postURL, postBody.Encode(), res.Request.URL.String(), jar)
+		res, err = fetchPost(postURL, postBody.Encode(), res.Request.URL.String(), jar, opts)
 		if err != nil {
 			return Result{}, err
 		}
@@ -514,7 +514,7 @@ func fetchGet(rawURL string, jar *cookiejar.Jar, referer string, opts Options) (
 		func(err error) bool { return !isMFA(err) },
 	)
 	if err != nil {
-		verbose(opts, fmt.Sprintf("[net] GET %s failed: %v", rawURL, err))
+		verbose(opts, fmt.Sprintf("[net] GET %s failed: %v", redactSAML(rawURL), err))
 	} else if opts.Verbose && out != nil && out.Request != nil {
 		dumpReqHeaders(out.Request)
 		dumpRespSetCookies(out)
@@ -522,37 +522,42 @@ func fetchGet(rawURL string, jar *cookiejar.Jar, referer string, opts Options) (
 	return out, err
 }
 
-func fetchPost(rawURL, body, referer string, jar *cookiejar.Jar) (*http.Response, error) {
+func fetchPost(rawURL, body, referer string, jar *cookiejar.Jar, opts Options) (*http.Response, error) {
 	res, err := httpclient.Fetch(rawURL, jar, httpclient.FetchOptions{
 		Method:  http.MethodPost,
 		Headers: map[string]string{"Content-Type": "application/x-www-form-urlencoded"},
 		Body:    body,
 		Referer: referer,
 	})
-	if res != nil && res.Request != nil {
+	if res != nil && res.Request != nil && opts.Verbose {
 		dumpReqHeaders(res.Request)
 		dumpRespSetCookies(res)
 	}
 	return res, err
 }
 
-// dumpRespSetCookies prints raw Set-Cookie header values verbatim — useful
-// for confirming whether the server actually sent Expires / Max-Age that our
-// cookie parser might be losing.
+// dumpRespSetCookies prints one line per Set-Cookie with the value
+// redacted — useful for confirming whether the server actually sent
+// Expires / Max-Age that our cookie parser might be losing without
+// putting the credential in a log.
 func dumpRespSetCookies(res *http.Response) {
 	for _, sc := range res.Header.Values("Set-Cookie") {
-		fmt.Fprintf(os.Stderr, "             << Set-Cookie: %s\n", sc)
+		pair, attrs, _ := strings.Cut(sc, ";")
+		name, value, _ := strings.Cut(pair, "=")
+		fmt.Fprintf(os.Stderr, "             << Set-Cookie: %s=<redacted %d bytes>%s\n", name, len(value), attrs)
 	}
 }
 
 // dumpReqHeaders prints the request headers in a compact form so verbose
 // mode shows what we actually sent to the server. Body is intentionally
-// omitted from the dump.
+// omitted from the dump, SAML parameters are redacted from URLs, and the
+// Referer is redacted because it carries the previous hop's URL, which
+// during the ADFS flow contains a SAMLRequest.
 func dumpReqHeaders(r *http.Request) {
 	if r == nil {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "           > %s %s\n", r.Method, r.URL.String())
+	fmt.Fprintf(os.Stderr, "           > %s %s\n", r.Method, redactSAML(r.URL.String()))
 	keys := []string{"User-Agent", "Accept", "Accept-Language", "Accept-Encoding",
 		"Referer", "Origin", "Content-Type", "Cache-Control",
 		"sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
@@ -560,9 +565,32 @@ func dumpReqHeaders(r *http.Request) {
 		"Upgrade-Insecure-Requests", "Pragma"}
 	for _, k := range keys {
 		if v := r.Header.Get(k); v != "" {
+			if k == "Referer" {
+				v = redactSAML(v)
+			}
 			fmt.Fprintf(os.Stderr, "             %s: %s\n", k, v)
 		}
 	}
+}
+
+func redactSAML(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "<unparseable url redacted>"
+	}
+	q := u.Query()
+	redacted := false
+	for _, k := range []string{"SAMLRequest", "SAMLResponse", "RelayState"} {
+		if v := q.Get(k); v != "" {
+			q.Set(k, fmt.Sprintf("<redacted %d bytes>", len(v)))
+			redacted = true
+		}
+	}
+	if !redacted {
+		return rawURL
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func isMFA(err error) bool {

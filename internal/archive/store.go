@@ -1,7 +1,9 @@
 package archive
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,13 +28,14 @@ type Resolved struct {
 }
 
 type SearchQuery struct {
-	Terms         string
-	Ext           string
-	CourseIDs     []string
-	Type          string
-	WithBodies    bool
-	MissingBodies bool
-	Limit         int
+	Terms            string
+	Ext              string
+	CourseIDs        []string
+	Type             string
+	WithBodies       bool
+	WithBodiesOnDisk bool
+	MissingBodies    bool
+	Limit            int
 }
 
 type SearchHit struct {
@@ -276,9 +279,12 @@ func (s *Store) Search(q SearchQuery) []SearchHit {
 		if q.WithBodies && t.CurrentBody == "" {
 			continue
 		}
+		if q.WithBodiesOnDisk && !s.bodyOnDisk(t) {
+			continue
+		}
 		if q.MissingBodies {
 			isFileCompatible := t.Type == "" || t.Type == "File"
-			if !isFileCompatible || t.CurrentBody != "" {
+			if !isFileCompatible || s.bodyOnDisk(t) {
 				continue
 			}
 		}
@@ -296,7 +302,7 @@ func (s *Store) Search(q SearchQuery) []SearchHit {
 			LastModified: t.LastModified,
 			Current:      t.Current,
 			CurrentBody:  t.CurrentBody,
-			HasBody:      t.CurrentBody != "",
+			HasBody:      s.bodyOnDisk(t),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -309,6 +315,10 @@ func (s *Store) Search(q SearchQuery) []SearchHit {
 		out = out[:q.Limit]
 	}
 	return out
+}
+
+func (s *Store) bodyOnDisk(t *TopicIndex) bool {
+	return t != nil && t.CurrentBody != "" && fileExists(BodyPath(s.Root, t.CurrentBody))
 }
 
 func (te *topicEntry) hayMatches(tokens []string) bool {
@@ -354,12 +364,32 @@ func isHex(s string) bool {
 	return true
 }
 
+// fileExists reports whether p is present, treating only positive
+// non-existence as absent. A permission or I/O error means the blob may
+// well be there, and callers that would otherwise re-download or
+// re-report it must not act on a failed stat. `archive verify` uses
+// statOK instead so an unreadable blob is reported, not passed.
 func fileExists(p string) bool {
 	if p == "" {
 		return false
 	}
 	_, err := os.Stat(p)
-	return err == nil
+	return err == nil || !errors.Is(err, fs.ErrNotExist)
+}
+
+// statOK reports whether p is present and surfaces the stat error when
+// it failed for a reason other than not-existence.
+func statOK(p string) (present bool, err error) {
+	if p == "" {
+		return false, nil
+	}
+	if _, err := os.Stat(p); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 type Status struct {
@@ -432,7 +462,11 @@ func LoadStatus(root string) (Status, error) {
 			if t.Type == "" || t.Type == "File" {
 				st.FileTopics++
 			}
-			if t.CurrentBody != "" {
+			// Only file-compatible topics are counted here so
+			// BodiesPresent matches MissingBodies' denominator: a
+			// non-File topic that still holds a body is reported by
+			// FileTopics/MissingBodies as missing.
+			if t.CurrentBody != "" && (t.Type == "" || t.Type == "File") && fileExists(BodyPath(root, t.CurrentBody)) {
 				st.BodiesPresent++
 			}
 		}
