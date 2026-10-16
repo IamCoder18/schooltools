@@ -167,9 +167,11 @@ func TestPacerZeroFloorNeverSleeps(t *testing.T) {
 	}
 }
 
-func TestPacerNilAndNegativeAreSafe(t *testing.T) {
+// TestPacerNilAndNegativeAreSafe asserts nothing: a panic in a Go test is
+// already a failure, so calling both guards is the whole test.
+func TestPacerNilAndNegativeAreSafe(_ *testing.T) {
 	var nilPacer *pacer
-	nilPacer.Wait() // must not panic
+	nilPacer.Wait()
 	newPacer(-time.Second).Wait()
 }
 
