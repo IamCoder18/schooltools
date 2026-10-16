@@ -24,7 +24,9 @@ func captureStderr(t *testing.T, fn func()) string {
 	// Drain the pipe concurrently so a fn that writes more than the
 	// pipe buffer cannot block, and restore os.Stderr even if fn
 	// panics or calls t.Fatal.
-	done := make(chan string)
+	// Buffered so the reader can finish and exit after the deferred
+	// cleanup even when fn panics and nobody receives from it.
+	done := make(chan string, 1)
 	go func() {
 		data, _ := io.ReadAll(r)
 		done <- string(data)
