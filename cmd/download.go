@@ -16,6 +16,7 @@ import (
 	"github.com/aarav/schooltools/internal/httpclient"
 	"github.com/aarav/schooltools/internal/session"
 	"github.com/aarav/schooltools/internal/ua"
+	"github.com/aarav/schooltools/internal/urlutil"
 )
 
 var (
@@ -316,21 +317,7 @@ func resolveFileURL(rawURL string) (string, error) {
 	if rawURL == "" {
 		return "", fmt.Errorf("empty url")
 	}
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return "", err
-	}
-	if u.IsAbs() {
-		return rawURL, nil
-	}
-	if u.Scheme == "" && u.Host == "" && (strings.HasPrefix(rawURL, "/") || strings.HasPrefix(rawURL, "./") || strings.HasPrefix(rawURL, "../")) {
-		base, perr := url.Parse(ua.D2LBase)
-		if perr != nil {
-			return "", perr
-		}
-		return base.ResolveReference(u).String(), nil
-	}
-	return rawURL, nil
+	return urlutil.ResolveD2L(ua.D2LBase, rawURL)
 }
 
 func pathExists(p string) (bool, error) {

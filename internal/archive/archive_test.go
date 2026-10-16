@@ -2,6 +2,7 @@ package archive
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -100,8 +102,8 @@ func TestSortedCourseIDs(t *testing.T) {
 
 func TestParseD2LTime(t *testing.T) {
 	cases := map[string]time.Time{
-		"":                            time.Time{},
-		"2026-01-02T03:04:05Z":        time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+		"":                             time.Time{},
+		"2026-01-02T03:04:05Z":         time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
 		"2026-01-02T03:04:05.0000000Z": time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
 	}
 	for in, want := range cases {
@@ -191,10 +193,10 @@ func TestCourseIndexRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now().UTC().Truncate(time.Second)
 	ci := &CourseIndex{
-		CourseID: "42",
-		Name:     "Test Course",
-		Code:     "TST 101",
-		IsActive: true,
+		CourseID:  "42",
+		Name:      "Test Course",
+		Code:      "TST 101",
+		IsActive:  true,
 		UpdatedAt: now,
 		Topics: map[int]*TopicIndex{
 			100: {
@@ -424,13 +426,18 @@ func TestPruneKeepsLiveAcrossCourses(t *testing.T) {
 // ---- end-to-end with stubbed HTTP -----------------------------------------
 
 type fakeD2L struct {
-	t           *testing.T
-	courses     []d2lCourse
-	tocs        map[string]content.TocResponse
-	topics      map[int]map[string]any
-	tocCalls    int
-	topicCalls  map[int]int
-	bodyHandler http.HandlerFunc // optional; serves file bodies on arbitrary paths
+	t             *testing.T
+	courses       []d2lCourse
+	coursesStatus int
+	tocs          map[string]content.TocResponse
+	topics        map[int]map[string]any
+	topicRaw      map[int]string
+	topicStatus   map[int]int
+	tocStatus     int
+	hijackTopics  map[int]bool
+	topicCalls    map[int]int
+	topicMu       sync.Mutex
+	bodyHandler   http.HandlerFunc // optional; serves file bodies on arbitrary paths
 }
 
 func newFakeD2L(t *testing.T) *fakeD2L {
@@ -451,16 +458,37 @@ func newFakeD2L(t *testing.T) *fakeD2L {
 	})
 	d2lver.Reset()
 	return &fakeD2L{
-		t:          t,
-		tocs:       map[string]content.TocResponse{},
-		topics:     map[int]map[string]any{},
-		topicCalls: map[int]int{},
+		t:            t,
+		tocs:         map[string]content.TocResponse{},
+		topics:       map[int]map[string]any{},
+		topicRaw:     map[int]string{},
+		topicStatus:  map[int]int{},
+		hijackTopics: map[int]bool{},
+		topicCalls:   map[int]int{},
 	}
+}
+
+// recordTopicCall counts a topics-API request. Called from the server
+// goroutine; reads go through topicCallCount under the same mutex.
+func (f *fakeD2L) recordTopicCall(id int) {
+	f.topicMu.Lock()
+	defer f.topicMu.Unlock()
+	f.topicCalls[id]++
+}
+
+func (f *fakeD2L) topicCallCount(id int) int {
+	f.topicMu.Lock()
+	defer f.topicMu.Unlock()
+	return f.topicCalls[id]
 }
 
 func (f *fakeD2L) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/d2l/le/manageCourses/api/mycourses", func(w http.ResponseWriter, r *http.Request) {
+		if f.coursesStatus != 0 {
+			w.WriteHeader(f.coursesStatus)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(d2lCoursesResponse{Courses: f.courses})
 	})
@@ -473,7 +501,10 @@ func (f *fakeD2L) handler() http.Handler {
 		course := parts[4]
 		switch parts[6] {
 		case "toc":
-			f.tocCalls++
+			if f.tocStatus != 0 {
+				w.WriteHeader(f.tocStatus)
+				return
+			}
 			toc, ok := f.tocs[course]
 			if !ok {
 				http.NotFound(w, r)
@@ -487,7 +518,28 @@ func (f *fakeD2L) handler() http.Handler {
 				return
 			}
 			id := atoi(parts[7])
-			f.topicCalls[id]++
+			f.recordTopicCall(id)
+			if f.hijackTopics[id] {
+				// Close the connection without a response so the
+				// client sees a transport-level error (EOF), not
+				// an HTTP status.
+				if hj, ok := w.(http.Hijacker); ok {
+					conn, _, herr := hj.Hijack()
+					if herr == nil {
+						_ = conn.Close()
+					}
+				}
+				return
+			}
+			if code, ok := f.topicStatus[id]; ok {
+				w.WriteHeader(code)
+				return
+			}
+			if raw, ok := f.topicRaw[id]; ok {
+				w.Header().Set("Content-Type", "text/html")
+				_, _ = io.WriteString(w, raw)
+				return
+			}
 			topic, ok := f.topics[id]
 			if !ok {
 				http.NotFound(w, r)

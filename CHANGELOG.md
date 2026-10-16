@@ -315,6 +315,97 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `html.UnescapeString`, so the default text body decodes common
   named and numeric entities (`&`, `<`, `'`, `'`, …)
   rather than leaving them as raw HTML escape sequences.
+- **P1:** `archive update` aborted the entire pass on the first topic
+  whose metadata fetch failed. D2L keeps stale "broken" TOC entries
+  (`IsBroken: true`, 404 on the topics API) — one dead 2022 dropbox
+  link in a single course blocked every course queued after it from
+  archiving. Topics D2L flags broken are now skipped without an API
+  call and topic-level fetch failures are counted and retried on the
+  next pass; a 401/403 (or a login-page redirect) stops the run
+  directly with `session expired; run 'schooltools login'`. A burst of
+  consecutive transport failures (network down, DNS dead) now aborts
+  the pass too instead of sending one doomed request per topic and
+  reporting success — HTTP failures such as a 404 on a deleted topic
+  keep the continue behavior. Course-level fetch and storage errors
+  still stop the run. The update summary and `--json` envelope gain
+  `topicsFailed` / `topicsSkipped` counters, and `--dry-run` reports
+  broken topics so the plan matches what a real pass does.
+- **P1:** `archive` status and `archive find` trusted the index's
+  `currentBody` pointer instead of the filesystem, so a store with
+  186 dangling pointers (from the `prune` entry under
+  Unreleased) reported "Bodies: 326 present, 8 missing" while
+  186 blobs were actually gone. `LoadStatus` now stats each blob
+  (a stat error other than "not exist" no longer counts as
+  missing); `find --with-bodies` gained
+  the `WithBodiesOnDisk` filter and `find --missing-bodies` also
+  matches topics whose pointer exists but whose blob does not.
+  `HasBody` on search hits and `FileTopic` reflects on-disk state.
+  `archive export` keeps the old pointer semantics so its
+  "skipped-missing-body" reporting is unchanged.
+- **P2:** D2L file-body URLs that contain unescaped path characters —
+  literal spaces, a bare `%` (`Acetic Acid, 5% (Vinegar).pdf`), `#` in
+  filenames (`Quiz #3 …`), a literal `?` — either failed `url.Parse`
+  with `invalid URL escape` or were truncated at the `#` into a URL
+  fragment and 404'd. The new `internal/urlutil` re-encodes the path
+  portion of a reference (preserving already-valid `%XX` sequences;
+  D2L file URLs never carry a query string, so `?` is a path
+  character) and applies the same cleaning to absolute URLs; both
+  `archive update`'s body downloads and `download` route through it.
+- **P2:** A course pass that hit a fatal error (expired session, or the
+  network going away mid-pass) returned before writing the per-course
+  index, so blobs fetched earlier in that pass were left on disk with
+  nothing pointing at them and the index updates were dropped. The
+  accumulated index is now persisted on the abort paths. A topic whose
+  metadata advanced but whose body could not be fetched now clears its
+  stale `currentBody` pointer (the blob itself is never removed), so the
+  next pass still sees it as needing a body instead of treating the old
+  bytes as current.
+- **P2:** `archive verify` treated any stat failure other than "not
+  exist" as proof a blob was present (a side effect of making the
+  status/search "is this body missing?" check tolerant of permission
+  errors). It now reports a present-but-unstattable blob as
+  `unreadable-*-blob` and no longer reports `ok` for it.
+- **P2:** `systemd status` dropped `systemctl list-timers` data rows
+  whose LAST column was a placeholder (a timer that never fired), so
+  fresh installs printed no next-run time at all, and mis-reported
+  UNIT/ACTIVATES when PASSED was a placeholder. The parser now
+  anchors on the trailing unit columns and treats placeholders
+  explicitly — both `-` and systemd 249's `n/a` — keeps the whole
+  multi-token LEFT field (`29min left`), and renders no next-run line
+  at all when the timer has no future elapse. `Uninstall` also
+  reports removal errors instead of silently claiming success, and is
+  a no-op again when nothing was installed.
+- **P2:** `systemd install` printed the volatile-binary-path warning
+  straight to stderr instead of routing it through `Status.Warnings`
+  (invisible to `--json`); `Uninstall` built a `removed` slice it
+  never read; a service unit with no `ExecStart=` line at all is now
+  flagged by the legacy-ExecStart warning.
+
+### Security
+
+- **P1:** The login/auto-refresh HTTP debug dump (`<< Set-Cookie: …`
+  values, request URLs) was printed **unconditionally** on every form
+  POST — `fetchPost` didn't take `Options`, and every auto-refresh
+  path hard-codes `Verbose: false`. Any `archive update` or `login`
+  run against an expired session therefore leaked the ADFS
+  `SAMLRequest` URL and raw `d2lSessionVal` / `d2lSecureSessionVal`
+  cookie values to stderr (and into journald under the systemd
+  unit), violating the threat model in `SECURITY.md`. `fetchPost` now
+  dumps only behind `--verbose`; every verbose URL print (request URL,
+  Referer, Location, redirect targets, POST form actions, GET
+  failures) redacts `SAMLRequest` / `SAMLResponse` / `RelayState` to
+  a length marker, and cookie values are redacted entirely rather
+  than truncated.
+- **P1:** An expired session during an archive run was reported as
+  generic failures: the my-courses listing 401'd as a course-list
+  error, a topic request that redirected to the D2L login page
+  (HTTP 200 + `text/html`) archived the login HTML as the topic's
+  metadata blob via the non-JSON fallback, a redirected file-body
+  download that ended at the login page hashed that HTML as the
+  topic's body, and a 401 on a body download was counted as an
+  ordinary body error so the run "succeeded" with missing bodies.
+  All of these paths now map to `errSessionExpired` and stop the run
+  with `session expired; run 'schooltools login'`.
 
 ## [0.2.0] - 2026-09-05
 

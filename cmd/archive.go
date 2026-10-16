@@ -102,8 +102,8 @@ func init() {
 
 	archiveFindCmd.Flags().StringVar(&archiveFindExt, "ext", "", "Filter by URL extension (e.g. pdf, docx)")
 	archiveFindCmd.Flags().StringVar(&archiveFindType, "type", "", "Filter by topic type (File, Link)")
-	archiveFindCmd.Flags().BoolVar(&archiveFindWith, "with-bodies", false, "Only show topics that have a file body archived")
-	archiveFindCmd.Flags().BoolVar(&archiveFindMiss, "missing-bodies", false, "Only show File topics whose body has never been archived")
+	archiveFindCmd.Flags().BoolVar(&archiveFindWith, "with-bodies", false, "Only show topics whose file body exists on disk")
+	archiveFindCmd.Flags().BoolVar(&archiveFindMiss, "missing-bodies", false, "Only show File topics whose file body is missing on disk")
 
 	archiveShowCmd.Flags().StringVar(&archiveShowKind, "kind", "", "Force the ref kind: metadata|body (default: auto-detect)")
 
@@ -236,6 +236,10 @@ var archiveUpdateCmd = &cobra.Command{
 		"body is missing on disk, even when its metadata is unchanged. Pass\n" +
 		"--no-bodies to skip body downloads. Pass --dry-run to preview without\n" +
 		"writing.\n\n" +
+		"Topics D2L flags as broken, and topics whose metadata fetch fails, are\n" +
+		"skipped and counted instead of aborting the pass — one dead topic can no\n" +
+		"longer stop the rest of your courses from archiving. A 401/403 response\n" +
+		"still stops the run with a \"session expired\" error.\n\n" +
 		"Examples:\n" +
 		"  schooltools archive update\n" +
 		"  schooltools archive update 12345 67890\n" +
@@ -309,6 +313,8 @@ func runArchiveUpdate(args []string) error {
 			"topicsChecked":  result.TopicsChecked,
 			"topicsFetched":  result.TopicsFetched,
 			"topicsStale":    result.TopicsStale,
+			"topicsFailed":   result.TopicsFailed,
+			"topicsSkipped":  result.TopicsSkipped,
 			"bodiesNew":      result.BodiesFetched,
 			"bodiesReused":   result.BodiesReused,
 			"bodiesFailed":   result.BodiesFailed,
@@ -321,8 +327,15 @@ func runArchiveUpdate(args []string) error {
 	fmt.Printf("Archive root: %s\n", result.Root)
 	fmt.Printf("Scanned %d course%s in %s\n",
 		result.CoursesScanned, plural(result.CoursesScanned), elapsed.Round(time.Millisecond))
-	fmt.Printf("Topics: %d checked, %d fetched, %d unchanged\n",
-		result.TopicsChecked, result.TopicsFetched, result.TopicsStale)
+	extra := ""
+	if result.TopicsSkipped > 0 {
+		extra += fmt.Sprintf(", %d skipped (broken)", result.TopicsSkipped)
+	}
+	if result.TopicsFailed > 0 {
+		extra += fmt.Sprintf(", %d failed", result.TopicsFailed)
+	}
+	fmt.Printf("Topics: %d checked, %d fetched, %d unchanged%s\n",
+		result.TopicsChecked, result.TopicsFetched, result.TopicsStale, extra)
 	if !archiveUpdateNoBodies && result.BodiesFetched+result.BodiesReused+result.BodiesFailed > 0 {
 		fmt.Printf("File bodies: %d new, %d unchanged (same SHA), %d errors\n",
 			result.BodiesFetched, result.BodiesReused, result.BodiesFailed)
@@ -367,6 +380,7 @@ func runArchiveUpdateDryRun(args []string, abs string) error {
 			"topicsChecked":    result.TopicsChecked,
 			"topicsWouldFetch": result.TopicsWouldFetch,
 			"topicsUnchanged":  result.TopicsStale,
+			"topicsBroken":     result.TopicsBroken,
 			"bodiesWouldFetch": result.BodiesWouldFetch,
 			"elapsedSeconds":   elapsed.Seconds(),
 			"perCourse":        result.PerCourse,
@@ -378,13 +392,21 @@ func runArchiveUpdateDryRun(args []string, abs string) error {
 	printUpdateDryRunTable(result)
 	fmt.Printf("\nWould scan %d course%s in %s\n",
 		result.CoursesScanned, plural(result.CoursesScanned), elapsed.Round(time.Millisecond))
-	fmt.Printf("Topics: %d checked, %d would fetch, %d unchanged\n",
-		result.TopicsChecked, result.TopicsWouldFetch, result.TopicsStale)
+	broken := ""
+	if result.TopicsBroken > 0 {
+		broken = fmt.Sprintf(" (%d broken topic%s never fetched)", result.TopicsBroken, plural(result.TopicsBroken))
+	}
+	fmt.Printf("Topics: %d checked, %d would fetch, %d unchanged%s\n",
+		result.TopicsChecked, result.TopicsWouldFetch, result.TopicsStale, broken)
 	if result.BodiesWouldFetch > 0 {
 		fmt.Printf("Bodies: %d would fill (convergence)\n", result.BodiesWouldFetch)
 	}
 	if result.TopicsWouldFetch == 0 && result.BodiesWouldFetch == 0 {
-		fmt.Println("Nothing to do — your archive is up to date.")
+		if result.TopicsBroken > 0 {
+			fmt.Println("Nothing to fetch — every remaining topic is flagged broken on D2L (see above); they will never be archived.")
+		} else {
+			fmt.Println("Nothing to do — your archive is up to date.")
+		}
 	} else {
 		fmt.Println("Re-run without --dry-run to apply.")
 	}
@@ -408,6 +430,7 @@ func printUpdateDryRunTable(result archive.DiffResult) {
 			fmt.Sprintf("%d", c.TopicsNew),
 			fmt.Sprintf("%d", c.TopicsModified),
 			fmt.Sprintf("%d", c.TopicsUnchanged),
+			fmt.Sprintf("%d", c.TopicsBroken),
 			fetch, bodies,
 		})
 	}
@@ -416,11 +439,11 @@ func printUpdateDryRunTable(result archive.DiffResult) {
 		return
 	}
 	out := table.Render(table.Options{
-		Headers: []string{"ID", "Code", "Name", "Total", "New", "Modified", "Unchanged", "WouldFetch", "Bodies"},
+		Headers: []string{"ID", "Code", "Name", "Total", "New", "Modified", "Unchanged", "Broken", "WouldFetch", "Bodies"},
 		Widths: table.Widths([]table.ColumnSpec{
 			table.Fixed(8), table.Fixed(8), table.Flex(20),
 			table.Fixed(6), table.Fixed(5), table.Fixed(9),
-			table.Fixed(10), table.Fixed(10), table.Flex(8),
+			table.Fixed(10), table.Fixed(6), table.Fixed(10), table.Flex(8),
 		}, table.TerminalWidth()),
 		Rows: rows,
 	})
@@ -596,8 +619,8 @@ var archiveFindCmd = &cobra.Command{
 		"type contains all whitespace-separated query tokens (case-insensitive).\n" +
 		"All tokens must match (AND). Use --ext to filter by file extension,\n" +
 		"--type File|Link to filter by topic type, --with-bodies for topics\n" +
-		"with an archived file body, --missing-bodies for File topics whose\n" +
-		"body has never been archived.\n\n" +
+		"whose file body exists on disk, --missing-bodies for File topics\n" +
+		"whose file body is missing on disk.\n\n" +
 		"Examples:\n" +
 		"  schooltools archive find safety contract\n" +
 		"  schooltools archive find --type File --ext pdf\n" +
@@ -614,12 +637,12 @@ func runArchiveFind(args []string) error {
 		return err
 	}
 	q := archive.SearchQuery{
-		Terms:         strings.Join(args, " "),
-		Ext:           archiveFindExt,
-		CourseIDs:     archiveCourses,
-		Type:          archiveFindType,
-		WithBodies:    archiveFindWith,
-		MissingBodies: archiveFindMiss,
+		Terms:            strings.Join(args, " "),
+		Ext:              archiveFindExt,
+		CourseIDs:        archiveCourses,
+		Type:             archiveFindType,
+		WithBodiesOnDisk: archiveFindWith,
+		MissingBodies:    archiveFindMiss,
 	}
 	hits := store.Search(q)
 

@@ -68,6 +68,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http/cookiejar"
@@ -82,7 +83,29 @@ import (
 	"github.com/aarav/schooltools/internal/content"
 	"github.com/aarav/schooltools/internal/httpclient"
 	"github.com/aarav/schooltools/internal/ua"
+	"github.com/aarav/schooltools/internal/urlutil"
 )
+
+var errSessionExpired = errors.New("session expired; run 'schooltools login'")
+
+// errTransport marks a transport-level failure (connection refused, DNS
+// failure, timeout, reset) rather than an HTTP status response. Callers
+// use it to abort a pass that is only re-hitting a dead network, while
+// continuing past per-topic HTTP failures such as a 404 on a deleted
+// topic.
+var errTransport = errors.New("transport failure")
+
+type transportError struct{ err error }
+
+func (e *transportError) Error() string        { return fmt.Sprintf("transport: %v", e.err) }
+func (e *transportError) Unwrap() error        { return e.err }
+func (e *transportError) Is(target error) bool { return target == errTransport }
+
+// maxConsecutiveTransportFailures bounds how many transport-level
+// failures in a row archiveCourseV2 tolerates before aborting the run.
+// Per-topic HTTP failures (a deleted topic, a stale TOC entry) do not
+// count toward it.
+const maxConsecutiveTransportFailures = 5
 
 const (
 	// SchemaVersion is bumped when the on-disk layout changes in a way that
@@ -219,9 +242,11 @@ type Result struct {
 	TopicsChecked  int
 	TopicsFetched  int
 	TopicsStale    int
-	BodiesFetched  int // File topics whose body blob was newly saved (SHA changed or first-ever)
-	BodiesReused   int // File topics whose body matched the saved hash — copy skipped
-	BodiesFailed   int // File topics whose body download errored (metadata still saved)
+	TopicsFailed   int
+	TopicsSkipped  int
+	BodiesFetched  int
+	BodiesReused   int
+	BodiesFailed   int
 }
 
 // DiffResult is the structured output of a Diff pass — what would a Run
@@ -232,11 +257,11 @@ type DiffResult struct {
 	TopicsChecked    int
 	TopicsWouldFetch int
 	TopicsStale      int
+	TopicsBroken     int
 	BodiesWouldFetch int
 	PerCourse        []CourseDiff
 }
 
-// CourseDiff summarises a single course's planned work.
 type CourseDiff struct {
 	CourseID         string
 	CourseName       string
@@ -245,6 +270,7 @@ type CourseDiff struct {
 	TopicsNew        int
 	TopicsModified   int
 	TopicsUnchanged  int
+	TopicsBroken     int
 	BodiesWouldFetch int
 	WouldFetchIDs    []int
 }
@@ -576,6 +602,8 @@ func Run(opts Options) (Result, error) {
 		result.TopicsChecked += stale.checked
 		result.TopicsFetched += stale.fetched
 		result.TopicsStale += stale.stale
+		result.TopicsFailed += stale.failed
+		result.TopicsSkipped += stale.skipped
 		result.BodiesFetched += stale.bodiesNew
 		result.BodiesReused += stale.bodiesReused
 		result.BodiesFailed += stale.bodiesErr
@@ -597,8 +625,9 @@ func Run(opts Options) (Result, error) {
 		})
 
 		if opts.Verbose {
-			fmt.Fprintf(os.Stderr, "[archive] %s (%s): %d topics, %d fetched, %d stale, +%d bodies, %d reused, %d errors\n",
+			fmt.Fprintf(os.Stderr, "[archive] %s (%s): %d topics, %d fetched, %d stale, %d failed, %d broken, +%d bodies, %d reused, %d errors\n",
 				c.OrgUnitId, c.Code, stale.checked, stale.fetched, stale.stale,
+				stale.failed, stale.skipped,
 				stale.bodiesNew, stale.bodiesReused, stale.bodiesErr)
 		}
 	}
@@ -676,6 +705,7 @@ func Diff(opts Options) (DiffResult, error) {
 		result.TopicsChecked += cd.TopicsTotal
 		result.TopicsWouldFetch += cd.TopicsNew + cd.TopicsModified
 		result.TopicsStale += cd.TopicsUnchanged
+		result.TopicsBroken += cd.TopicsBroken
 		result.BodiesWouldFetch += cd.BodiesWouldFetch
 		result.PerCourse = append(result.PerCourse, cd)
 
@@ -718,6 +748,10 @@ func diffCourse(opts Options, c Course) (CourseDiff, error) {
 	}
 	for _, t := range flattenTopics(toc.Modules) {
 		cd.TopicsTotal++
+		if t.IsBroken {
+			cd.TopicsBroken++
+			continue
+		}
 		newMod := parseD2LTime(t.LastModifiedDate)
 		ti, existed := ci.Topics[t.TopicId]
 		isFile := topicType(t) == "File" && t.Url != nil && *t.Url != ""
@@ -758,6 +792,7 @@ func diffCourse(opts Options, c Course) (CourseDiff, error) {
 type courseStats struct {
 	stale, checked, fetched            int
 	bodiesNew, bodiesReused, bodiesErr int
+	failed, skipped                    int
 }
 
 // archiveCourse runs a single course's archive pass and returns the
@@ -770,6 +805,7 @@ func archiveCourse(opts Options, c Course, now func() time.Time) (courseStats, e
 // archiveCourseV2 is the working implementation.
 func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats, error) {
 	var s courseStats
+	transportFails := 0
 	toc, err := fetchTocFor(opts.baseURL(), c.OrgUnitId, opts.Jar)
 	if err != nil {
 		return s, err
@@ -783,6 +819,18 @@ func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats,
 	ci.Code = c.Code
 	ci.IsActive = c.IsActive
 
+	// abortWithIndex persists whatever the pass has already archived
+	// before returning a fatal error. The store is append-only at the
+	// blob layer, so dropping the index would leave blobs on disk that
+	// nothing points at and silently discard the topics fetched so far.
+	abortWithIndex := func(cause error) (courseStats, error) {
+		ci.UpdatedAt = now()
+		if serr := SaveCourseIndex(opts.Root, c.OrgUnitId, ci); serr != nil {
+			return s, errors.Join(cause, serr)
+		}
+		return s, cause
+	}
+
 	type queued struct {
 		topicID int
 		topic   content.TocTopic
@@ -793,6 +841,10 @@ func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats,
 	var work []queued
 	for _, t := range flattenTopics(toc.Modules) {
 		s.checked++
+		if t.IsBroken {
+			s.skipped++
+			continue
+		}
 		newMod := parseD2LTime(t.LastModifiedDate)
 		ti, existed := ci.Topics[t.TopicId]
 		isFile := topicType(t) == "File" && t.Url != nil && *t.Url != ""
@@ -823,8 +875,23 @@ func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats,
 			})
 			body, ferr := fetchTopicFor(opts.baseURL(), opts.Jar, c.OrgUnitId, q.topicID)
 			if ferr != nil {
-				return s, fmt.Errorf("fetch topic %d: %w", q.topicID, ferr)
+				if errors.Is(ferr, errSessionExpired) {
+					return abortWithIndex(ferr)
+				}
+				if errors.Is(ferr, errTransport) {
+					transportFails++
+					if transportFails >= maxConsecutiveTransportFailures {
+						return abortWithIndex(fmt.Errorf("network unreachable: aborted after %d consecutive transport failures (last: %v)",
+							transportFails, ferr))
+					}
+				}
+				s.failed++
+				if opts.Verbose {
+					fmt.Fprintf(os.Stderr, "[archive]   topic %d: fetch failed: %v (continuing)\n", q.topicID, ferr)
+				}
+				continue
 			}
+			transportFails = 0
 			uuid, size, werr := SaveBlob(opts.Root, body)
 			if werr != nil {
 				return s, werr
@@ -866,12 +933,31 @@ func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats,
 		}
 		bodyBytes, contentType, berr := downloadFileBody(opts.Jar, bodyURL, opts.baseURL())
 		if berr != nil {
+			// The metadata for a topic whose reason was new/modified is
+			// about to be recorded as current, but its body is not. Clear
+			// the stale pointer so bodyNeeded queues the topic again on
+			// the next pass instead of pinning the old bytes forever (the
+			// blob itself is never removed; BodyVersions still names it).
+			if q.reason == "modified" {
+				ti.CurrentBody = ""
+			}
+			if errors.Is(berr, errSessionExpired) {
+				return abortWithIndex(berr)
+			}
+			if errors.Is(berr, errTransport) {
+				transportFails++
+				if transportFails >= maxConsecutiveTransportFailures {
+					return abortWithIndex(fmt.Errorf("network unreachable: aborted after %d consecutive transport failures (last: %v)",
+						transportFails, berr))
+				}
+			}
 			if opts.Verbose {
 				fmt.Fprintf(os.Stderr, "[archive]   body %d: %v (continuing)\n", q.topicID, berr)
 			}
 			s.bodiesErr++
 			continue
 		}
+		transportFails = 0
 		sha := sha256.Sum256(bodyBytes)
 		shaHex := hex.EncodeToString(sha[:])
 		// Re-save when the queued reason was "body-missing" (the existing
@@ -897,6 +983,12 @@ func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats,
 			continue
 		}
 		if _, _, sErr := SaveFileBody(opts.Root, bodyBytes); sErr != nil {
+			// Same reasoning as the download-failure branch: metadata
+			// advanced, body did not, so the topic must stay eligible for
+			// a retry.
+			if q.reason == "modified" {
+				ti.CurrentBody = ""
+			}
 			if opts.Verbose {
 				fmt.Fprintf(os.Stderr, "[archive]   body %d save: %v (continuing)\n", q.topicID, sErr)
 			}
@@ -945,35 +1037,38 @@ func downloadFileBody(jar *cookiejar.Jar, rawURL, base string) ([]byte, string, 
 	if rawURL == "" {
 		return nil, "", fmt.Errorf("empty URL")
 	}
-	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
-		b := base
-		if b == "" {
-			b = ua.D2LBase
-		}
-		parsed, err := url.Parse(b)
-		if err != nil {
-			return nil, "", fmt.Errorf("resolve base: %w", err)
-		}
-		rel, err := url.Parse(rawURL)
-		if err != nil {
-			return nil, "", fmt.Errorf("parse %s: %w", rawURL, err)
-		}
-		rawURL = parsed.ResolveReference(rel).String()
+	if base == "" {
+		base = ua.D2LBase
 	}
+	resolved, rerr := urlutil.ResolveD2L(base, rawURL)
+	if rerr != nil {
+		return nil, "", fmt.Errorf("resolve %s: %w", rawURL, rerr)
+	}
+	rawURL = resolved
 	res, err := httpclient.FollowRedirects(rawURL, jar, httpclient.FetchOptions{
 		Headers: map[string]string{"Accept": "*/*"},
 	})
 	if err != nil {
-		return nil, "", err
+		return nil, "", &transportError{err}
 	}
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode/100 != 2 {
+		if res.StatusCode == 401 || res.StatusCode == 403 {
+			return nil, "", errSessionExpired
+		}
 		body, _ := io.ReadAll(res.Body)
 		msg := strings.TrimSpace(string(body))
 		if len(msg) > 200 {
 			msg = msg[:200] + "..."
 		}
 		return nil, "", fmt.Errorf("download %d %s for %s: %s", res.StatusCode, res.Status, rawURL, msg)
+	}
+	// An expired session redirects the download to the D2L login page,
+	// which answers 200 with HTML; that page must never be hashed as a
+	// topic body. (Content-Type is deliberately not checked: D2L serves
+	// real .html topic files as text/html.)
+	if ua.IsLoginURL(res.Request.URL.String()) {
+		return nil, "", errSessionExpired
 	}
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
@@ -1024,6 +1119,9 @@ func fetchTocFor(base, orgUnitID string, jar *cookiejar.Jar) (content.TocRespons
 		return content.TocResponse{}, err
 	}
 	if res.StatusCode != 200 {
+		if res.StatusCode == 401 || res.StatusCode == 403 {
+			return content.TocResponse{}, errSessionExpired
+		}
 		return content.TocResponse{}, fmt.Errorf("D2L API returned %d %s for %s", res.StatusCode, res.Status, res.Request.URL)
 	}
 	var toc content.TocResponse
@@ -1040,10 +1138,17 @@ func fetchTopicFor(base string, jar *cookiejar.Jar, orgUnitID string, topicID in
 		Headers: map[string]string{"Accept": "application/json"},
 	})
 	if err != nil {
-		return nil, err
+		return nil, &transportError{err}
 	}
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != 200 {
+		if res.StatusCode == 401 || res.StatusCode == 403 {
+			return nil, errSessionExpired
+		}
 		return nil, fmt.Errorf("D2L API returned %d %s for topic %d", res.StatusCode, res.Status, topicID)
+	}
+	if ct := res.Header.Get("Content-Type"); strings.Contains(ct, "text/html") || ua.IsLoginURL(res.Request.URL.String()) {
+		return nil, errSessionExpired
 	}
 	body, err := httpclient.BodyBytes(res)
 	if err != nil {
@@ -1155,7 +1260,7 @@ func FileTopics(root, ext string) ([]FileTopic, error) {
 				Type:         t.Type,
 				LastModified: t.LastModified,
 				CurrentBody:  t.CurrentBody,
-				HasBody:      t.CurrentBody != "",
+				HasBody:      t.CurrentBody != "" && fileExists(BodyPath(root, t.CurrentBody)),
 			})
 		}
 	}
@@ -1275,6 +1380,9 @@ func fetchCoursesPage(jar *cookiejar.Jar, rawURL string) (d2lCoursesResponse, er
 		return d2lCoursesResponse{}, err
 	}
 	if res.StatusCode != 200 {
+		if res.StatusCode == 401 || res.StatusCode == 403 {
+			return d2lCoursesResponse{}, errSessionExpired
+		}
 		return d2lCoursesResponse{}, fmt.Errorf("D2L my-courses API returned %d %s", res.StatusCode, res.Status)
 	}
 	ct := res.Header.Get("Content-Type")

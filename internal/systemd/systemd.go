@@ -6,6 +6,7 @@ package systemd
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -98,10 +99,11 @@ func isVolatilePath(p string) bool {
 }
 
 // legacyExecStart reports whether the on-disk service unit still calls the
-// pre-archive-UX-redesign form (e.g. `archive` / `prune`). Parses each
-// ExecStart= directive (skipping comments and unrelated lines) and returns
-// true when none of them invoke `archive update`. A bare mention of
-// "archive update" in a Description= line cannot suppress the warning.
+// pre-archive-UX-redesign form (e.g. `archive` / `prune`), or is missing an
+// ExecStart line altogether. Parses each ExecStart= directive (skipping
+// comments and unrelated lines) and returns true when none of them invoke
+// `archive update`. A bare mention of "archive update" in a Description=
+// line cannot suppress the warning.
 func legacyExecStart(svcPath string) bool {
 	data, err := os.ReadFile(svcPath)
 	if err != nil {
@@ -123,7 +125,7 @@ func legacyExecStart(svcPath string) bool {
 		}
 	}
 	if !anyExec {
-		return false
+		return true
 	}
 	return !anyUpdate
 }
@@ -190,9 +192,6 @@ func Install(opts InstallOptions) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	for _, w := range warnings {
-		fmt.Fprintln(os.Stderr, "warning:", w)
-	}
 	data := map[string]string{"ExecStart": execStart}
 	if err := renderTemplate("schooltools-archive.service.tmpl", data, svcPath); err != nil {
 		return Status{}, err
@@ -209,7 +208,9 @@ func Install(opts InstallOptions) (Status, error) {
 		return Status{}, fmt.Errorf("enable --now %s failed: %w\n%s", TimerName, err, out)
 	}
 
-	return Query()
+	st, err := Query()
+	st.Warnings = append(warnings, st.Warnings...)
+	return st, err
 }
 
 // Uninstall disables+stops the timer, then removes the unit files. Safe to
@@ -224,18 +225,37 @@ func Uninstall() (Status, error) {
 
 	svcPath := filepath.Join(dir, ServiceName)
 	tmrPath := filepath.Join(dir, TimerName)
-	removed := []string{}
-	if err := os.Remove(svcPath); err == nil {
-		removed = append(removed, svcPath)
+	removed := false
+	remove := func(p string) error {
+		err := os.Remove(p)
+		switch {
+		case err == nil:
+			removed = true
+			return nil
+		case errors.Is(err, os.ErrNotExist):
+			return nil
+		default:
+			return err
+		}
 	}
-	if err := os.Remove(tmrPath); err == nil {
-		removed = append(removed, tmrPath)
+	var rmErr error
+	if err := remove(svcPath); err != nil {
+		rmErr = errors.Join(rmErr, err)
+	}
+	if err := remove(tmrPath); err != nil {
+		rmErr = errors.Join(rmErr, err)
+	}
+	if !removed && rmErr == nil {
+		// Nothing was installed: leave systemctl alone entirely.
+		return Status{UserDir: dir}, nil
 	}
 	if _, err := runSystemctl("daemon-reload"); err != nil {
-		return Status{}, fmt.Errorf("daemon-reload after uninstall failed: %w", err)
+		// Join so a removal failure isn't hidden by the reload error:
+		// a unit file that could not be removed is still on disk.
+		return Status{}, fmt.Errorf("daemon-reload after uninstall failed: %w", errors.Join(err, rmErr))
 	}
-	if len(removed) == 0 {
-		return Status{UserDir: dir}, nil
+	if rmErr != nil {
+		return Status{UserDir: dir}, fmt.Errorf("remove unit files: %w", rmErr)
 	}
 	return Status{UserDir: dir}, nil
 }
@@ -261,7 +281,7 @@ func Query() (Status, error) {
 	}
 	if legacyExecStart(svcPath) {
 		st.Warnings = append(st.Warnings,
-			"service unit uses a pre-archive-update ExecStart; rerun `schooltools systemd install --force` to upgrade in place")
+			"service unit has no ExecStart or uses a pre-archive-update one; rerun `schooltools systemd install --force` to upgrade in place")
 	}
 
 	// is-enabled
@@ -275,8 +295,8 @@ func Query() (Status, error) {
 	// Parse `list-timers` output. The header line lists columns:
 	//   NEXT  LEFT  LAST  PASSED  UNIT  ACTIVATES
 	// and each data line is a fixed-width-ish sequence of:
-	//   <NEXT datetime, ~4 tokens>  <LEFT, 1 token>
-	//   <LAST datetime, ~4 tokens>  <PASSED, 2 tokens like "9min ago">
+	//   <NEXT datetime, ~4 tokens>  <LEFT, display text like "29min left">
+	//   <LAST datetime, ~4 tokens>  <PASSED, display text like "9min ago">
 	//   <UNIT>  <ACTIVATES>
 	// We don't try to be clever about column widths — we just locate the
 	// header, then for each non-header, non-blank, non-summary line, pull
@@ -298,9 +318,9 @@ func Query() (Status, error) {
 		if fields[0] == "NEXT" {
 			continue
 		}
-		// Summary lines: "1 timers listed.", "Pass --all ...", "0 loaded ...".
-		// Skip anything whose first field doesn't look like a day-of-week.
-		if !isDayOfWeek(fields[0]) {
+		// Summary lines ("1 timers listed.", "Pass --all …") and the header
+		// never carry the unit name; data rows always do.
+		if !strings.Contains(line, TimerName) {
 			continue
 		}
 		// We expect at least: <NEXT: 3 tokens + tz, 1 token for LEFT,
@@ -321,91 +341,101 @@ func Query() (Status, error) {
 	return st, nil
 }
 
+// isTimerPlaceholder reports whether a list-timers token is an empty
+// column. systemctl prints "-" on most versions and "n/a" on systemd
+// 249+ for empty NEXT/LEFT/LAST/PASSED columns.
+func isTimerPlaceholder(s string) bool {
+	return s == "-" || s == "n/a"
+}
+
 // splitTimerFields groups a token slice from a `list-timers` data row into
-// the six semantic columns. Robust to either layout:
-//   - NEXT is `-` (timer never fired):  firstDOW is at the LAST position
-//   - NEXT is a real datetime:           firstDOW is at position 0
+// the six semantic columns. The row layout is:
 //
-// We anchor on the LAST datetime (second day-of-week token) which is always
-// present, then derive everything else relative to it.
+//	<NEXT: 4 tokens>  <LEFT: 1+ tokens ("29min", "29min left")>  <LAST: 4 tokens | placeholder>  <PASSED: "N ago" | placeholder>  <UNIT>  <ACTIVATES>
+//
+// The final two tokens are always UNIT and ACTIVATES, so they anchor the
+// parse. LAST and PASSED are placeholders until the timer has fired at
+// least once; a placeholder PASSED must not shift the UNIT/ACTIVATES
+// columns. LEFT is human display text ("29min left"), not a fixed
+// token count, so its slice runs up to the next known column.
 func splitTimerFields(f []string) (next, left, last, passed, unit, activates string, ok bool) {
-	if len(f) < 4 {
+	if len(f) < 6 {
 		return
 	}
-	// Locate the two day-of-week tokens. LAST always has 4 tokens
-	// (DayOfWeek YYYY-MM-DD HH:MM:SS TZ), so its DOW marks a clean split.
-	firstDOW := -1
-	secondDOW := -1
-	for i, tok := range f {
+	unit, activates = f[len(f)-2], f[len(f)-1]
+	rest := f[:len(f)-2]
+
+	var dows []int
+	for i, tok := range rest {
 		if isDayOfWeek(tok) {
-			if firstDOW == -1 {
-				firstDOW = i
-			} else if secondDOW == -1 {
-				secondDOW = i
-				break
+			dows = append(dows, i)
+		}
+	}
+	switch len(dows) {
+	case 1:
+		if dows[0] == 0 {
+			// NEXT is real; LAST and PASSED are single-token
+			// placeholders, so LEFT runs from the end of the NEXT
+			// datetime up to those two trailing tokens.
+			if len(rest) < 7 {
+				return
 			}
+			next = strings.Join(rest[:4], " ")
+			if l := rest[4 : len(rest)-2]; !allPlaceholders(l) {
+				left = strings.Join(l, " ")
+			}
+		} else {
+			// NEXT is a placeholder (timer with no next elapse);
+			// the sole DOW token starts LAST.
+			if dows[0]+4 > len(rest) {
+				return
+			}
+			if toks := rest[:dows[0]-1]; !allPlaceholders(toks) {
+				next = strings.Join(toks, " ")
+			}
+			if dows[0] >= 2 && !isTimerPlaceholder(rest[dows[0]-1]) {
+				left = rest[dows[0]-1]
+			}
+			last = strings.Join(rest[dows[0]:dows[0]+4], " ")
+			mid := rest[dows[0]+4:]
+			if len(mid) == 1 && isTimerPlaceholder(mid[0]) {
+				mid = nil
+			}
+			passed = strings.Join(mid, " ")
 		}
-	}
-	if firstDOW == -1 || secondDOW == -1 {
+	case 2:
+		if dows[1]+4 > len(rest) {
+			return
+		}
+		next = strings.Join(rest[:4], " ")
+		if l := rest[4:dows[1]]; !allPlaceholders(l) {
+			left = strings.Join(l, " ")
+		}
+		last = strings.Join(rest[dows[1]:dows[1]+4], " ")
+		mid := rest[dows[1]+4:]
+		if len(mid) == 1 && isTimerPlaceholder(mid[0]) {
+			mid = nil
+		}
+		passed = strings.Join(mid, " ")
+	default:
 		return
 	}
-	// last = 4 tokens starting at secondDOW
-	lastEnd := secondDOW + 4
-	if lastEnd > len(f) {
-		return
-	}
-	last = strings.Join(f[secondDOW:lastEnd], " ")
-
-	// next = tokens before secondDOW. Two sub-cases:
-	//   - firstDOW == 0: NEXT is a full datetime at f[0:4], LEFT is f[4]
-	//   - firstDOW > 0:  NEXT is f[0:firstDOW] (placeholder or just "-" with
-	//     nothing after), LEFT would be the next field after that
-	if firstDOW == 0 {
-		// Real datetime
-		if secondDOW < 4 {
-			return // malformed: NEXT datetime would overlap LAST
-		}
-		next = strings.Join(f[0:4], " ")
-		if 4 < secondDOW {
-			left = f[4]
-		}
-	} else {
-		// Placeholder (or short). firstDOW > 0 means f[0] is the placeholder.
-		next = strings.Join(f[0:firstDOW], " ")
-		if firstDOW+1 < secondDOW {
-			left = f[firstDOW+1]
-		}
-	}
-
-	// passed = tokens after LAST, up to and including the "ago" sentinel.
-	// `systemctl list-timers` renders relative times in many shapes:
-	// "5s", "1min", "2h", "1min 42s", "3 days 2h", etc. The only stable
-	// boundary is the trailing "ago".
-	passedStart := lastEnd
-	passedEnd := -1
-	for i := passedStart; i < len(f)-1; i++ {
-		if f[i+1] == "ago" {
-			passedEnd = i + 2 // include the "ago"
-			break
-		}
-	}
-	if passedEnd == -1 {
-		// No "ago" sentinel — leave Passed empty.
-		passed = ""
-		passedEnd = passedStart
-	} else {
-		passed = strings.Join(f[passedStart:passedEnd], " ")
-	}
-
-	// unit, activates at the tail.
-	tail := f[passedEnd:]
-	if len(tail) < 2 {
-		return
-	}
-	unit = tail[0]
-	activates = tail[1]
 	ok = true
 	return
+}
+
+// allPlaceholders reports whether every token is an empty-column marker
+// (or the slice is empty), i.e. the column carries no real value.
+func allPlaceholders(toks []string) bool {
+	if len(toks) == 0 {
+		return true
+	}
+	for _, t := range toks {
+		if !isTimerPlaceholder(t) {
+			return false
+		}
+	}
+	return true
 }
 
 // splitNonEmptyLines trims trailing whitespace and drops empty lines.
