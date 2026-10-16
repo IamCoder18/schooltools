@@ -3,10 +3,12 @@ package archive
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aarav/schooltools/internal/content"
 )
@@ -121,6 +123,120 @@ func TestRunAbortsAfterConsecutiveTransportFailures(t *testing.T) {
 	if ci.Topics[7003] != nil {
 		t.Error("a topic that never arrived must not be in the index")
 	}
+}
+
+// A topic whose metadata advanced must not keep an old body pointer: the
+// next pass would see matching metadata plus an existing blob and skip
+// the changed body forever. The pointer is cleared so the topic stays
+// eligible for a retry.
+func TestModifiedTopicWithFailedBodyStaysEligible(t *testing.T) {
+	dir := t.TempDir()
+	for i := 7301; i <= 7306; i++ {
+		seedTopicBody(t, dir, "1", i)
+	}
+
+	f := newFakeD2L(t)
+	f.courses = []d2lCourse{{OrgUnitId: json.Number("1"), Name: "Bio", Code: "BIO", IsActive: true}}
+	var topics []content.TocTopic
+	for i := 7301; i <= 7306; i++ {
+		u := fmt.Sprintf("/content/enforced/1-BIO/note%d.pdf", i)
+		topics = append(topics, content.TocTopic{
+			TopicId: i, Title: "Notes", LastModifiedDate: "2026-03-01T00:00:00Z",
+			TypeIdentifier: "File", Url: &u,
+		})
+		f.topics[i] = map[string]any{"TopicId": i, "Title": "Notes", "TypeIdentifier": "File", "Url": u}
+	}
+	f.tocs["1"] = content.TocResponse{Modules: []content.TocModule{{ModuleId: 1, Topics: topics}}}
+	f.bodyHandler = func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}
+	srv := httptest.NewServer(f.handler())
+	defer srv.Close()
+
+	res, err := Run(Options{Root: dir, Jar: newJar(t), BaseURL: srv.URL, DownloadFiles: true})
+	if err != nil {
+		t.Fatalf("a 404 on a body must not abort the pass: %v", err)
+	}
+	if res.BodiesFailed != 6 {
+		t.Errorf("BodiesFailed=%d, want 6", res.BodiesFailed)
+	}
+
+	ci, err := LoadCourseIndex(dir, "1")
+	if err != nil {
+		t.Fatalf("LoadCourseIndex: %v", err)
+	}
+	for i := 7301; i <= 7306; i++ {
+		ti := ci.Topics[i]
+		if ti == nil {
+			t.Fatalf("topic %d is missing from the persisted index", i)
+		}
+		if ti.CurrentBody != "" {
+			t.Errorf("topic %d kept body %q after a failed download; the next pass would treat it as converged", i, ti.CurrentBody)
+		}
+		if ti.LastModified.IsZero() || ti.LastModified.Before(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)) {
+			t.Errorf("topic %d did not keep the new metadata timestamp: %v", i, ti.LastModified)
+		}
+	}
+
+	// With the bodies reachable again, every cleared pointer is refetched.
+	f2 := newFakeD2L(t)
+	f2.courses = f.courses
+	f2.tocs = f.tocs
+	f2.topics = f.topics
+	f2.bodyHandler = func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("new body for " + r.URL.Path))
+	}
+	srv2 := httptest.NewServer(f2.handler())
+	defer srv2.Close()
+
+	res2, err := Run(Options{Root: dir, Jar: newJar(t), BaseURL: srv2.URL, DownloadFiles: true})
+	if err != nil {
+		t.Fatalf("recovery run: %v", err)
+	}
+	if res2.BodiesFetched != 6 {
+		t.Errorf("BodiesFetched=%d, want 6 (every cleared pointer must be re-fetched)", res2.BodiesFetched)
+	}
+	ci, err = LoadCourseIndex(dir, "1")
+	if err != nil {
+		t.Fatalf("LoadCourseIndex after recovery: %v", err)
+	}
+	for i := 7301; i <= 7306; i++ {
+		if ti := ci.Topics[i]; ti == nil || ti.CurrentBody == "" {
+			t.Errorf("topic %d has no body after the recovery run", i)
+		}
+	}
+}
+
+// seedTopicBody writes an archived File topic with one body blob on disk
+// and returns that body's SHA.
+func seedTopicBody(t *testing.T, dir, courseID string, topicID int) string {
+	t.Helper()
+	sha, _, err := SaveFileBody(dir, []byte(fmt.Sprintf("old body %d", topicID)))
+	if err != nil {
+		t.Fatalf("SaveFileBody: %v", err)
+	}
+	ci, err := LoadCourseIndex(dir, courseID)
+	if err != nil {
+		t.Fatalf("LoadCourseIndex: %v", err)
+	}
+	if ci.Topics == nil {
+		ci.Topics = map[int]*TopicIndex{}
+	}
+	ci.CourseID = courseID
+	ci.Topics[topicID] = &TopicIndex{
+		TopicID: topicID, Title: "Notes", Type: "File",
+		URL:         fmt.Sprintf("/content/enforced/%s-BIO/note%d.pdf", courseID, topicID),
+		CurrentBody: sha, LastModified: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	if err := SaveCourseIndex(dir, courseID, ci); err != nil {
+		t.Fatalf("SaveCourseIndex: %v", err)
+	}
+	if err := SaveIndex(dir, &Index{Version: SchemaVersion, Courses: map[string]*IndexEntry{
+		courseID: {OrgUnitId: courseID},
+	}}); err != nil {
+		t.Fatalf("SaveIndex: %v", err)
+	}
+	return sha
 }
 
 func TestRunToleratesHTTPFailuresAfterTransportBounded(t *testing.T) {

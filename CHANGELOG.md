@@ -355,7 +355,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   network going away mid-pass) returned before writing the per-course
   index, so blobs fetched earlier in that pass were left on disk with
   nothing pointing at them and the index updates were dropped. The
-  accumulated index is now persisted on the abort paths.
+  accumulated index is now persisted on the abort paths. A topic whose
+  metadata advanced but whose body could not be fetched now clears its
+  stale `currentBody` pointer (the blob itself is never removed), so the
+  next pass still sees it as needing a body instead of treating the old
+  bytes as current.
 - **P2:** `archive verify` treated any stat failure other than "not
   exist" as proof a blob was present (a side effect of making the
   status/search "is this body missing?" check tolerant of permission

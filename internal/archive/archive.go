@@ -933,6 +933,14 @@ func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats,
 		}
 		bodyBytes, contentType, berr := downloadFileBody(opts.Jar, bodyURL, opts.baseURL())
 		if berr != nil {
+			// The metadata for a topic whose reason was new/modified is
+			// about to be recorded as current, but its body is not. Clear
+			// the stale pointer so bodyNeeded queues the topic again on
+			// the next pass instead of pinning the old bytes forever (the
+			// blob itself is never removed; BodyVersions still names it).
+			if q.reason == "modified" {
+				ti.CurrentBody = ""
+			}
 			if errors.Is(berr, errSessionExpired) {
 				return abortWithIndex(berr)
 			}
@@ -975,6 +983,12 @@ func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats,
 			continue
 		}
 		if _, _, sErr := SaveFileBody(opts.Root, bodyBytes); sErr != nil {
+			// Same reasoning as the download-failure branch: metadata
+			// advanced, body did not, so the topic must stay eligible for
+			// a retry.
+			if q.reason == "modified" {
+				ti.CurrentBody = ""
+			}
 			if opts.Verbose {
 				fmt.Fprintf(os.Stderr, "[archive]   body %d save: %v (continuing)\n", q.topicID, sErr)
 			}
