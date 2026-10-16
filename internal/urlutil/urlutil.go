@@ -43,8 +43,12 @@ func CleanPath(raw string) string {
 	return encodePath(raw)
 }
 
+// isAbs reports whether raw already carries an HTTP(S) scheme. Schemes
+// are case-insensitive, so "HTTPS://host/x" is absolute too and must
+// never be treated as a relative reference.
 func isAbs(u string) bool {
-	return strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")
+	lower := strings.ToLower(u)
+	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
 }
 
 func cleanAbs(raw string) string {

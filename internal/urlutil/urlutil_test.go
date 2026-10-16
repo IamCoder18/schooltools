@@ -87,6 +87,17 @@ func TestResolveD2LRelativeRefWithSpaceBeforeColon(t *testing.T) {
 	}
 }
 
+func TestResolveD2LUppercaseSchemeStaysAbsolute(t *testing.T) {
+	got, err := ResolveD2L("https://d2l.cbe.ab.ca", "HTTPS://files.example.com/a b.pdf")
+	if err != nil {
+		t.Fatalf("ResolveD2L: %v", err)
+	}
+	want := "HTTPS://files.example.com/a%20b.pdf"
+	if got != want {
+		t.Errorf("ResolveD2L = %q, want %q (an uppercase scheme must not resolve under the D2L base)", got, want)
+	}
+}
+
 func TestResolveD2LAbsoluteURLIsCleaned(t *testing.T) {
 	got, err := ResolveD2L("https://d2l.cbe.ab.ca", "https://files.example.com/a b#c.pdf")
 	if err != nil {
