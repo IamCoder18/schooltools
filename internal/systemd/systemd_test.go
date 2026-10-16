@@ -36,7 +36,7 @@ func TestSplitTimerFieldsBothDatetimes(t *testing.T) {
 func TestSplitTimerFieldsNeverFired(t *testing.T) {
 	f := []string{
 		"Wed", "2026-10-14", "21:00:00", "MDT", "30min", "left",
-		"n/a", "n/a",
+		"-", "-",
 		"schooltools-archive.timer", "schooltools-archive.service",
 	}
 	next, left, last, passed, unit, activates, ok := splitTimerFields(f)
@@ -125,6 +125,43 @@ func TestSplitTimerFieldsPlaceholderNextRealLast(t *testing.T) {
 	}
 	if unit != "schooltools-archive.timer" || activates != "schooltools-archive.service" {
 		t.Errorf("unit/activates = %q/%q", unit, activates)
+	}
+}
+
+func TestSplitTimerFieldsPlaceholderSpellings(t *testing.T) {
+	// "-" is the pre-249 form and "n/a" the systemd 249+ form; both
+	// must parse identically in both shapes.
+	for _, ph := range []string{"-", "n/a"} {
+		neverFired := []string{
+			"Wed", "2026-10-14", "21:00:00", "MDT", "30min", "left",
+			ph, ph,
+			"schooltools-archive.timer", "schooltools-archive.service",
+		}
+		next, left, last, passed, _, _, ok := splitTimerFields(neverFired)
+		if !ok {
+			t.Errorf("%s never-fired: not ok", ph)
+			continue
+		}
+		if next != "Wed 2026-10-14 21:00:00 MDT" || left != "30min left" || last != "" || passed != "" {
+			t.Errorf("%s never-fired: next=%q left=%q last=%q passed=%q", ph, next, left, last, passed)
+		}
+
+		noNext := []string{
+			ph, ph,
+			"Wed", "2026-10-14", "20:00:55", "MDT", "23s", "ago",
+			"schooltools-archive.timer", "schooltools-archive.service",
+		}
+		next, left, last, passed, _, _, ok = splitTimerFields(noNext)
+		if !ok {
+			t.Errorf("%s placeholder-NEXT: not ok", ph)
+			continue
+		}
+		if next != "" || left != "" {
+			t.Errorf("%s placeholder-NEXT: next=%q left=%q, want empty", ph, next, left)
+		}
+		if last != "Wed 2026-10-14 20:00:55 MDT" || passed != "23s ago" {
+			t.Errorf("%s placeholder-NEXT: last=%q passed=%q", ph, last, passed)
+		}
 	}
 }
 
