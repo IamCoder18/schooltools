@@ -70,3 +70,37 @@ func TestWithRetryExhaustsAttempts(t *testing.T) {
 	// Ensure it doesn't sleep too long for the test.
 	_ = time.Millisecond
 }
+
+func TestDelayForRaisesTheFloor(t *testing.T) {
+	calls := 0
+	out, err := retry.WithRetry(func() (string, error) {
+		calls++
+		if calls < 2 {
+			return "", errors.New("fetch failed")
+		}
+		return "ok", nil
+	}, retry.Options{
+		Attempts:    3,
+		BaseDelayMs: 1,
+		DelayFor: func(int, error) time.Duration { return 40 * time.Millisecond },
+	}, retry.IsRetryable)
+	assert.NoError(t, err)
+	assert.Equal(t, "ok", out)
+	assert.Equal(t, 2, calls)
+}
+
+func TestDelayForCannotShortenBackoff(t *testing.T) {
+	// A hint below the computed backoff must be ignored, so DelayFor can
+	// never be used to retry sooner than the exponential schedule.
+	calls := 0
+	_, err := retry.WithRetry(func() (string, error) {
+		calls++
+		return "", errors.New("fetch failed")
+	}, retry.Options{
+		Attempts:    2,
+		BaseDelayMs: 60,
+		DelayFor:    func(int, error) time.Duration { return time.Nanosecond },
+	}, retry.IsRetryable)
+	assert.Error(t, err)
+	assert.Equal(t, 2, calls)
+}

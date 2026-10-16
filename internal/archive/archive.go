@@ -301,6 +301,14 @@ type Options struct {
 	CourseIDs     []string       // when non-empty, restrict to these course ids
 	Now           func() time.Time
 	DownloadFiles bool // when true, also download each File topic's underlying bytes and hash-store them in blobs/<sha256>.bin (default: false for backwards-compat)
+	// RequestInterval is the floor on the gap between consecutive outbound
+	// requests; the real gap is randomized above it. Nil means
+	// DefaultRequestInterval; an explicit 0 disables pacing altogether.
+	RequestInterval *time.Duration
+
+	// pacer is the pass-wide rate limiter, created from RequestInterval on
+	// first use so one Run/Diff shares a single budget across all courses.
+	pacer *pacer
 }
 
 // baseURL returns the effective D2L base, defaulting to ua.D2LBase.
@@ -522,6 +530,7 @@ func Run(opts Options) (Result, error) {
 	if opts.Jar == nil {
 		return Result{}, fmt.Errorf("archive: nil cookie jar")
 	}
+	opts.pacer = opts.limiter()
 	now := opts.Now
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
@@ -563,7 +572,7 @@ func Run(opts Options) (Result, error) {
 		if opts.Progress != nil {
 			opts.Progress(ProgressEvent{Phase: "list"})
 		}
-		listed, err := listAllCoursesAt(opts.Jar, opts.baseURL())
+		listed, err := listAllCoursesAt(opts, opts.baseURL())
 		if err != nil {
 			return Result{}, fmt.Errorf("archive: list courses: %w", err)
 		}
@@ -652,6 +661,7 @@ func Diff(opts Options) (DiffResult, error) {
 	if opts.Jar == nil {
 		return DiffResult{}, fmt.Errorf("archive: nil cookie jar")
 	}
+	opts.pacer = opts.limiter()
 
 	result := DiffResult{Root: opts.Root}
 	idx, err := LoadIndex(opts.Root)
@@ -680,7 +690,7 @@ func Diff(opts Options) (DiffResult, error) {
 		if opts.Progress != nil {
 			opts.Progress(ProgressEvent{Phase: "list"})
 		}
-		listed, err := listAllCoursesAt(opts.Jar, opts.baseURL())
+		listed, err := listAllCoursesAt(opts, opts.baseURL())
 		if err != nil {
 			return result, fmt.Errorf("diff: list courses: %w", err)
 		}
@@ -733,7 +743,7 @@ func Diff(opts Options) (DiffResult, error) {
 // index, fetch the TOC, classify every topic, return the counts. No body
 // fetches, no index writes.
 func diffCourse(opts Options, c Course) (CourseDiff, error) {
-	toc, err := fetchTocFor(opts.baseURL(), c.OrgUnitId, opts.Jar)
+	toc, err := opts.fetchToc(opts.limiter(), c.OrgUnitId)
 	if err != nil {
 		return CourseDiff{}, err
 	}
@@ -806,7 +816,7 @@ func archiveCourse(opts Options, c Course, now func() time.Time) (courseStats, e
 func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats, error) {
 	var s courseStats
 	transportFails := 0
-	toc, err := fetchTocFor(opts.baseURL(), c.OrgUnitId, opts.Jar)
+	toc, err := opts.fetchToc(opts.limiter(), c.OrgUnitId)
 	if err != nil {
 		return s, err
 	}
@@ -873,7 +883,7 @@ func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats,
 				Reason:   q.reason,
 				Stale:    s.stale,
 			})
-			body, ferr := fetchTopicFor(opts.baseURL(), opts.Jar, c.OrgUnitId, q.topicID)
+			body, ferr := opts.fetchTopic(opts.limiter(), c.OrgUnitId, q.topicID)
 			if ferr != nil {
 				if errors.Is(ferr, errSessionExpired) {
 					return abortWithIndex(ferr)
@@ -931,7 +941,7 @@ func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats,
 		if bodyURL == "" {
 			continue
 		}
-		bodyBytes, contentType, berr := downloadFileBody(opts.Jar, bodyURL, opts.baseURL())
+		bodyBytes, contentType, berr := opts.fetchBody(opts.limiter(), bodyURL)
 		if berr != nil {
 			// The metadata for a topic whose reason was new/modified is
 			// about to be recorded as current, but its body is not. Clear
@@ -1061,7 +1071,8 @@ func downloadFileBody(jar *cookiejar.Jar, rawURL, base string) ([]byte, string, 
 		if len(msg) > 200 {
 			msg = msg[:200] + "..."
 		}
-		return nil, "", fmt.Errorf("download %d %s for %s: %s", res.StatusCode, res.Status, rawURL, msg)
+		return nil, "", newStatusError(res,
+			fmt.Sprintf("download %d %s for %s: %s", res.StatusCode, res.Status, rawURL, msg))
 	}
 	// An expired session redirects the download to the D2L login page,
 	// which answers 200 with HTML; that page must never be hashed as a
@@ -1072,7 +1083,7 @@ func downloadFileBody(jar *cookiejar.Jar, rawURL, base string) ([]byte, string, 
 	}
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
-		return nil, "", err
+		return nil, "", &transportError{err}
 	}
 	return body, res.Header.Get("Content-Type"), nil
 }
@@ -1116,13 +1127,15 @@ func fetchTocFor(base, orgUnitID string, jar *cookiejar.Jar) (content.TocRespons
 		Headers: map[string]string{"Accept": "application/json"},
 	})
 	if err != nil {
-		return content.TocResponse{}, err
+		return content.TocResponse{}, &transportError{err}
 	}
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != 200 {
 		if res.StatusCode == 401 || res.StatusCode == 403 {
 			return content.TocResponse{}, errSessionExpired
 		}
-		return content.TocResponse{}, fmt.Errorf("D2L API returned %d %s for %s", res.StatusCode, res.Status, res.Request.URL)
+		return content.TocResponse{}, newStatusError(res,
+			fmt.Sprintf("D2L API returned %d %s for %s", res.StatusCode, res.Status, res.Request.URL))
 	}
 	var toc content.TocResponse
 	if err := json.NewDecoder(res.Body).Decode(&toc); err != nil {
@@ -1145,14 +1158,15 @@ func fetchTopicFor(base string, jar *cookiejar.Jar, orgUnitID string, topicID in
 		if res.StatusCode == 401 || res.StatusCode == 403 {
 			return nil, errSessionExpired
 		}
-		return nil, fmt.Errorf("D2L API returned %d %s for topic %d", res.StatusCode, res.Status, topicID)
+		return nil, newStatusError(res,
+			fmt.Sprintf("D2L API returned %d %s for topic %d", res.StatusCode, res.Status, topicID))
 	}
 	if ct := res.Header.Get("Content-Type"); strings.Contains(ct, "text/html") || ua.IsLoginURL(res.Request.URL.String()) {
 		return nil, errSessionExpired
 	}
 	body, err := httpclient.BodyBytes(res)
 	if err != nil {
-		return nil, err
+		return nil, &transportError{err}
 	}
 	out, err := prettyJSON(body)
 	if err != nil {
@@ -1348,13 +1362,13 @@ type d2lCoursesResponse struct {
 	Courses []d2lCourse `json:"Courses"`
 }
 
-func listAllCoursesAt(jar *cookiejar.Jar, base string) ([]Course, error) {
+func listAllCoursesAt(opts Options, base string) ([]Course, error) {
 	var all []Course
 	next := coursesAPIURLFor(base)
 	pageNum := 0
 	for next != "" {
 		pageNum++
-		data, err := fetchCoursesPage(jar, next)
+		data, err := opts.fetchCoursesPage(opts.limiter(), next)
 		if err != nil {
 			return all, err
 		}
@@ -1377,13 +1391,14 @@ func listAllCoursesAt(jar *cookiejar.Jar, base string) ([]Course, error) {
 func fetchCoursesPage(jar *cookiejar.Jar, rawURL string) (d2lCoursesResponse, error) {
 	res, err := httpclient.FollowRedirects(rawURL, jar, httpclient.FetchOptions{})
 	if err != nil {
-		return d2lCoursesResponse{}, err
+		return d2lCoursesResponse{}, &transportError{err}
 	}
 	if res.StatusCode != 200 {
 		if res.StatusCode == 401 || res.StatusCode == 403 {
 			return d2lCoursesResponse{}, errSessionExpired
 		}
-		return d2lCoursesResponse{}, fmt.Errorf("D2L my-courses API returned %d %s", res.StatusCode, res.Status)
+		return d2lCoursesResponse{}, newStatusError(res,
+			fmt.Sprintf("D2L my-courses API returned %d %s", res.StatusCode, res.Status))
 	}
 	ct := res.Header.Get("Content-Type")
 	if !strings.Contains(ct, "application/json") && !strings.Contains(ct, "text/json") {
@@ -1391,7 +1406,7 @@ func fetchCoursesPage(jar *cookiejar.Jar, rawURL string) (d2lCoursesResponse, er
 	}
 	body, err := httpclient.BodyBytes(res)
 	if err != nil {
-		return d2lCoursesResponse{}, err
+		return d2lCoursesResponse{}, &transportError{err}
 	}
 	var out d2lCoursesResponse
 	if err := json.Unmarshal(body, &out); err != nil {
