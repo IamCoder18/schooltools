@@ -250,7 +250,9 @@ func Uninstall() (Status, error) {
 		return Status{UserDir: dir}, nil
 	}
 	if _, err := runSystemctl("daemon-reload"); err != nil {
-		return Status{}, fmt.Errorf("daemon-reload after uninstall failed: %w", err)
+		// Join so a removal failure isn't hidden by the reload error:
+		// a unit file that could not be removed is still on disk.
+		return Status{}, fmt.Errorf("daemon-reload after uninstall failed: %w", errors.Join(err, rmErr))
 	}
 	if rmErr != nil {
 		return Status{UserDir: dir}, fmt.Errorf("remove unit files: %w", rmErr)
