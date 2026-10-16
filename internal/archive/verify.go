@@ -51,6 +51,29 @@ func Verify(root string, deep bool) (VerifyResult, error) {
 	blobsDir := filepath.Join(root, blobsDirName)
 	seenBlobs := map[string]struct{}{}
 
+	// checkBlob distinguishes "absent" from "present but unreadable": a
+	// stat failure that is not not-existence is reported as an issue
+	// instead of being passed as a present blob.
+	checkBlob := func(path, name, missingCode, unreadableCode, missingMsg, courseID string, topicID int) bool {
+		present, err := statOK(path)
+		if err != nil {
+			res.Issues = append(res.Issues, VerifyIssue{
+				Code:     unreadableCode,
+				CourseID: courseID, TopicID: topicID, Blob: name,
+				Message: fmt.Sprintf("cannot stat %s: %v", name, err),
+			})
+			return false
+		}
+		if !present {
+			res.Issues = append(res.Issues, VerifyIssue{
+				Code:     missingCode,
+				CourseID: courseID, TopicID: topicID, Blob: name,
+				Message: missingMsg,
+			})
+		}
+		return present
+	}
+
 	courseIDs := make([]string, 0, len(idx.Courses))
 	for cid := range idx.Courses {
 		courseIDs = append(courseIDs, cid)
@@ -104,37 +127,29 @@ func Verify(root string, deep bool) (VerifyResult, error) {
 			res.CheckedTopics++
 			if t.Current != "" {
 				name := t.Current + blobExt
-				path := MetadataBlobPath(root, t.Current)
-				if !fileExists(path) {
-					res.Issues = append(res.Issues, VerifyIssue{
-						Code:     "missing-metadata-blob",
-						CourseID: cid, TopicID: t.TopicID, Blob: name,
-						Message: fmt.Sprintf("current metadata pointer %s does not exist on disk", name),
-					})
-				} else {
+				ok := checkBlob(MetadataBlobPath(root, t.Current), name,
+					"missing-metadata-blob", "unreadable-metadata-blob",
+					fmt.Sprintf("current metadata pointer %s does not exist on disk", name),
+					cid, t.TopicID)
+				if ok {
 					seenBlobs[name] = struct{}{}
 				}
 			}
 			for _, v := range t.Versions {
 				name := v.UUID + blobExt
-				if !fileExists(MetadataBlobPath(root, v.UUID)) {
-					res.Issues = append(res.Issues, VerifyIssue{
-						Code:     "dangling-metadata-version",
-						CourseID: cid, TopicID: t.TopicID, Blob: name,
-						Message: fmt.Sprintf("versions[] entry %s not found on disk", name),
-					})
-				}
+				checkBlob(MetadataBlobPath(root, v.UUID), name,
+					"dangling-metadata-version", "unreadable-metadata-version",
+					fmt.Sprintf("versions[] entry %s not found on disk", name),
+					cid, t.TopicID)
 			}
 			if t.CurrentBody != "" {
 				name := t.CurrentBody + bodyExt
 				path := BodyPath(root, t.CurrentBody)
-				if !fileExists(path) {
-					res.Issues = append(res.Issues, VerifyIssue{
-						Code:     "missing-body-blob",
-						CourseID: cid, TopicID: t.TopicID, Blob: name,
-						Message: fmt.Sprintf("currentBody %s does not exist on disk", name),
-					})
-				} else {
+				ok := checkBlob(path, name,
+					"missing-body-blob", "unreadable-body-blob",
+					fmt.Sprintf("currentBody %s does not exist on disk", name),
+					cid, t.TopicID)
+				if ok {
 					seenBlobs[name] = struct{}{}
 					if deep {
 						if err := verifyBodyHash(path, t.CurrentBody); err != nil {
@@ -149,13 +164,10 @@ func Verify(root string, deep bool) (VerifyResult, error) {
 			}
 			for _, b := range t.BodyVersions {
 				name := b.SHA256 + bodyExt
-				if !fileExists(BodyPath(root, b.SHA256)) {
-					res.Issues = append(res.Issues, VerifyIssue{
-						Code:     "dangling-body-version",
-						CourseID: cid, TopicID: t.TopicID, Blob: name,
-						Message: fmt.Sprintf("bodyVersions[] entry %s not found on disk", name),
-					})
-				}
+				checkBlob(BodyPath(root, b.SHA256), name,
+					"dangling-body-version", "unreadable-body-version",
+					fmt.Sprintf("bodyVersions[] entry %s not found on disk", name),
+					cid, t.TopicID)
 			}
 		}
 	}

@@ -364,14 +364,32 @@ func isHex(s string) bool {
 	return true
 }
 
+// fileExists reports whether p is present, treating only positive
+// non-existence as absent. A permission or I/O error means the blob may
+// well be there, and callers that would otherwise re-download or
+// re-report it must not act on a failed stat. `archive verify` uses
+// statOK instead so an unreadable blob is reported, not passed.
 func fileExists(p string) bool {
 	if p == "" {
 		return false
 	}
 	_, err := os.Stat(p)
-	// A permission or I/O error means the blob might well be there;
-	// only positive non-existence counts as missing.
 	return err == nil || !errors.Is(err, fs.ErrNotExist)
+}
+
+// statOK reports whether p is present and surfaces the stat error when
+// it failed for a reason other than not-existence.
+func statOK(p string) (present bool, err error) {
+	if p == "" {
+		return false, nil
+	}
+	if _, err := os.Stat(p); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 type Status struct {
