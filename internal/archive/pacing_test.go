@@ -187,8 +187,8 @@ func TestOptionsLimiterIntervalResolution(t *testing.T) {
 	if got := (Options{RequestInterval: d(120 * time.Millisecond)}).limiter().floor; got != 120*time.Millisecond {
 		t.Errorf("120ms -> floor %v, want 120ms", got)
 	}
-	if got := (Options{RequestInterval: d(-time.Second)}).limiter().floor; got != 0 {
-		t.Errorf("negative -> floor %v, want 0", got)
+	if got := (Options{RequestInterval: d(-time.Second)}).limiter().floor; got != DefaultRequestInterval {
+		t.Errorf("negative -> floor %v, want %v (a typo must not silently disable pacing)", got, DefaultRequestInterval)
 	}
 }
 
@@ -500,17 +500,34 @@ func TestRunWithoutPacingIsFast(t *testing.T) {
 	defer srv.Close()
 
 	zero := time.Duration(0)
-	start := time.Now()
-	res, err := Run(Options{Root: t.TempDir(), Jar: newJar(t), BaseURL: srv.URL, RequestInterval: &zero})
-	elapsed := time.Since(start)
+	// Inject a pacer that counts sleeps instead of sleeping, so this asserts
+	// "no waits were added" directly. A wall-clock ceiling would flake on a
+	// loaded machine without testing anything more precisely.
+	var mu sync.Mutex
+	var sleeps int
+	p := newPacer(zero)
+	p.sleep = func(time.Duration) {
+		mu.Lock()
+		sleeps++
+		mu.Unlock()
+	}
+
+	res, err := Run(Options{
+		Root:            t.TempDir(),
+		Jar:             newJar(t),
+		BaseURL:         srv.URL,
+		RequestInterval: &zero,
+		pacer:           p,
+	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if res.TopicsFetched != topics {
 		t.Fatalf("TopicsFetched = %d, want %d", res.TopicsFetched, topics)
 	}
-	// 25 topics unthrottled must not cost anywhere near the default floor.
-	if budget := time.Duration(topics) * DefaultRequestInterval; elapsed >= budget {
-		t.Errorf("elapsed = %v with pacing disabled, want < %v", elapsed, budget)
+	mu.Lock()
+	defer mu.Unlock()
+	if sleeps != 0 {
+		t.Errorf("pacer slept %d times with a zero interval, want 0", sleeps)
 	}
 }

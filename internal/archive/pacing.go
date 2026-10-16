@@ -218,10 +218,15 @@ func (o Options) limiter() *pacer {
 	}
 	floor := DefaultRequestInterval
 	if o.RequestInterval != nil {
-		floor = *o.RequestInterval
-	}
-	if floor < 0 {
-		floor = 0
+		switch {
+		case *o.RequestInterval > 0:
+			floor = *o.RequestInterval
+		case *o.RequestInterval == 0:
+			floor = 0
+		}
+		// A negative interval is a typo, and honoring it would silently drop
+		// the protection pacing exists to provide. It falls back to the
+		// default instead; 0 stays the only way to turn pacing off.
 	}
 	return newPacer(floor)
 }
