@@ -15,14 +15,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   gap is measured from the previous request's start, a slow response
   already satisfies the floor and costs no extra wall-clock.
 - `archive update` now retries throttled and temporarily-failing requests
-  (HTTP 429 and 5xx) up to 3 times with exponential backoff, jitter, and
-  `Retry-After` support in both delta-seconds and HTTP-date form.
-  Permanent failures (404, 400) and expired sessions are still not retried.
+  (HTTP 429 and 5xx) for up to 3 attempts with exponential backoff, jitter,
+  and `Retry-After` support in both delta-seconds and HTTP-date form.
+  A `Retry-After` hint is capped at 60s so a hostile or broken value cannot
+  stall a pass. Permanent failures (404, 400) and expired sessions are
+  still not retried.
 
 ### Fixed
-- `archive update` leaked a connection per TOC fetch: the response body
-  was decoded but never closed. Retries made that leak multiply, so it is
-  closed now.
+- `archive update` leaked a connection per TOC fetch and per course-list
+  page: the response body was decoded but never closed. Retries made those
+  leaks multiply, so they are closed now.
 
 ## [0.3.0] - 2026-10-15
 

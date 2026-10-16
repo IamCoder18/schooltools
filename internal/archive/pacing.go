@@ -110,23 +110,54 @@ func newStatusError(res *http.Response, msg string) *statusError {
 	}
 }
 
+// maxRetryAfter bounds how far a server-supplied Retry-After can stall a
+// pass. Archive is strictly sequential, so honoring an unbounded hint —
+// "Retry-After: 86400", or an HTTP-date far in the future — would hang the
+// whole run with no progress output. Past the cap we retry on the normal
+// backoff instead, which is the lesser evil. Clamping before converting to
+// time.Duration also stops time.Duration(secs) * time.Second overflowing
+// int64 and wrapping to a negative value the helper would then ignore.
+const maxRetryAfter = 60 * time.Second
+
 // parseRetryAfter reads a Retry-After header in either the delta-seconds or
-// HTTP-date form. An unparseable or absent header yields 0, which leaves the
-// computed backoff in charge.
+// HTTP-date form. An unparseable, absent, or over-cap value yields something
+// that leaves the computed backoff in charge.
 func parseRetryAfter(v string) time.Duration {
 	v = strings.TrimSpace(v)
 	if v == "" {
 		return 0
 	}
-	if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
-		return time.Duration(secs) * time.Second
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs >= 0 {
+			if secs > int(maxRetryAfter/time.Second) {
+				return maxRetryAfter
+			}
+			return time.Duration(secs) * time.Second
+		}
+	} else if errors.Is(err, strconv.ErrRange) && allDigits(v) {
+		// Digits that overflow an int64. The server asked for a wait far
+		// longer than we will ever honor, so clamp rather than fall through
+		// to the backoff and retry a throttle immediately.
+		return maxRetryAfter
 	}
 	if t, err := http.ParseTime(v); err == nil {
 		if d := time.Until(t); d > 0 {
-			return d
+			return min(d, maxRetryAfter)
 		}
 	}
 	return 0
+}
+
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // retryableError decides whether a failed archive request is worth another

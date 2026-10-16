@@ -221,6 +221,31 @@ func TestParseRetryAfter(t *testing.T) {
 	}
 }
 
+func TestParseRetryAfterIsCapped(t *testing.T) {
+	// An unbounded server hint must not be able to stall a sequential pass.
+	for _, v := range []string{"61", "86400", "10000000000", "99999999999999999999"} {
+		if got := parseRetryAfter(v); got != maxRetryAfter {
+			t.Errorf("parseRetryAfter(%q) = %v, want the %v cap", v, got, maxRetryAfter)
+		}
+	}
+	if got := parseRetryAfter("60"); got != maxRetryAfter {
+		t.Errorf("parseRetryAfter(\"60\") = %v, want %v (at the cap, not over)", got, maxRetryAfter)
+	}
+	if got := parseRetryAfter("59"); got != 59*time.Second {
+		t.Errorf("parseRetryAfter(\"59\") = %v, want 59s (under the cap, untouched)", got)
+	}
+	// A far-future HTTP-date must clamp rather than returning its full delta.
+	far := time.Now().Add(72 * time.Hour).UTC().Format(http.TimeFormat)
+	if got := parseRetryAfter(far); got != maxRetryAfter {
+		t.Errorf("parseRetryAfter(future date) = %v, want the %v cap", got, maxRetryAfter)
+	}
+	// A near-future date must survive intact.
+	near := time.Now().Add(5 * time.Second).UTC().Format(http.TimeFormat)
+	if got := parseRetryAfter(near); got <= 0 || got > 5*time.Second {
+		t.Errorf("parseRetryAfter(near date) = %v, want roughly 5s", got)
+	}
+}
+
 func TestRetryableErrorClassification(t *testing.T) {
 	se := func(status int) error { return &statusError{status: status, msg: "x"} }
 
@@ -379,43 +404,80 @@ func TestRunHonoursRetryAfter(t *testing.T) {
 	}
 }
 
+// TestRunPacesRequestsAcrossCourses pins the property that the pacer is
+// pass-wide: the gap between the last topic of one course and the TOC of the
+// next must be paced too. A per-course pacer would leave that boundary
+// unpaced, so the assertion is on the minimum observed gap across every
+// request rather than on total elapsed time.
 func TestRunPacesRequestsAcrossCourses(t *testing.T) {
 	f := newFakeD2L(t)
-	f.courses = []d2lCourse{{OrgUnitId: json.Number("1111"), Name: "C", Code: "C", IsActive: true}}
-
-	const topics = 12
-	var toc []content.TocTopic
-	for i := 0; i < topics; i++ {
-		id := 7000 + i
-		toc = append(toc, content.TocTopic{
-			TopicId: id, Title: "t", LastModifiedDate: "2026-03-01T00:00:00Z", TypeIdentifier: "HTML",
-		})
-		f.topics[id] = map[string]any{"TopicId": id, "Title": "t", "TypeIdentifier": "HTML"}
+	f.courses = []d2lCourse{
+		{OrgUnitId: json.Number("1111"), Name: "A", Code: "A", IsActive: true},
+		{OrgUnitId: json.Number("2222"), Name: "B", Code: "B", IsActive: true},
 	}
-	f.tocs["1111"] = content.TocResponse{Modules: []content.TocModule{{ModuleId: 1, Topics: toc}}}
 
-	srv := httptest.NewServer(f.handler())
+	const topicsPerCourse = 6
+	var received []time.Time
+	var mu sync.Mutex
+	mark := func() {
+		mu.Lock()
+		received = append(received, time.Now())
+		mu.Unlock()
+	}
+
+	for course, base := range map[string]int{"1111": 7000, "2222": 8000} {
+		var toc []content.TocTopic
+		for i := 0; i < topicsPerCourse; i++ {
+			id := base + i
+			toc = append(toc, content.TocTopic{
+				TopicId: id, Title: "t", LastModifiedDate: "2026-03-01T00:00:00Z", TypeIdentifier: "HTML",
+			})
+			f.topics[id] = map[string]any{"TopicId": id, "Title": "t", "TypeIdentifier": "HTML"}
+		}
+		f.tocs[course] = content.TocResponse{Modules: []content.TocModule{{ModuleId: 1, Topics: toc}}}
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/content/") || strings.Contains(r.URL.Path, "/mycourses") {
+			mark()
+		}
+		f.handler().ServeHTTP(w, r)
+	}))
 	defer srv.Close()
 
-	interval := 15 * time.Millisecond
-	start := time.Now()
+	interval := 20 * time.Millisecond
 	res, err := Run(Options{
 		Root:            t.TempDir(),
 		Jar:             newJar(t),
 		BaseURL:         srv.URL,
 		RequestInterval: &interval,
 	})
-	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if res.TopicsFetched != topics {
-		t.Fatalf("TopicsFetched = %d, want %d", res.TopicsFetched, topics)
+	if res.CoursesScanned != 2 {
+		t.Fatalf("CoursesScanned = %d, want 2", res.CoursesScanned)
 	}
-	// One TOC request plus `topics` topic requests: topics gaps are paced.
-	minGaps := topics * interval
-	if elapsed < minGaps {
-		t.Errorf("elapsed = %v, want >= %v (%d paced gaps of >= %v)", elapsed, minGaps, topics, interval)
+	if want := 2 * topicsPerCourse; res.TopicsFetched != want {
+		t.Fatalf("TopicsFetched = %d, want %d", res.TopicsFetched, want)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	// 2 TOC requests + 12 topic requests + 1 course list.
+	if len(received) != 2*topicsPerCourse+3 {
+		t.Fatalf("recorded %d requests, want %d", len(received), 2*topicsPerCourse+3)
+	}
+	smallest := time.Duration(1<<62 - 1)
+	for i := 1; i < len(received); i++ {
+		if gap := received[i].Sub(received[i-1]); gap < smallest {
+			smallest = gap
+		}
+	}
+	// Slack absorbs measurement noise between two handler-side clock reads;
+	// a per-course pacer reset would show up here as a ~0ms boundary gap.
+	if floor := interval - 5*time.Millisecond; smallest < floor {
+		t.Errorf("smallest gap between consecutive requests = %v, want >= %v (pacing must survive the course boundary)", smallest, floor)
 	}
 }
 
