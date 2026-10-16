@@ -351,6 +351,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   D2L file URLs never carry a query string, so `?` is a path
   character) and applies the same cleaning to absolute URLs; both
   `archive update`'s body downloads and `download` route through it.
+- **P2:** A course pass that hit a fatal error (expired session, or the
+  network going away mid-pass) returned before writing the per-course
+  index, so blobs fetched earlier in that pass were left on disk with
+  nothing pointing at them and the index updates were dropped. The
+  accumulated index is now persisted on the abort paths.
+- **P2:** `archive verify` treated any stat failure other than "not
+  exist" as proof a blob was present (a side effect of making the
+  status/search "is this body missing?" check tolerant of permission
+  errors). It now reports a present-but-unstattable blob as
+  `unreadable-*-blob` and no longer reports `ok` for it.
 - **P2:** `systemd status` dropped `systemctl list-timers` data rows
   whose LAST column was a placeholder (a timer that never fired), so
   fresh installs printed no next-run time at all, and mis-reported
