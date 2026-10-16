@@ -75,8 +75,13 @@ func TestRunSurvivesBrokenAndFailingTopics(t *testing.T) {
 func TestRunAbortsAfterConsecutiveTransportFailures(t *testing.T) {
 	f := newFakeD2L(t)
 	var topics []content.TocTopic
-	for i := 7001; i <= 7006; i++ {
-		topics = append(topics, content.TocTopic{TopicId: i, Title: "T", LastModifiedDate: "2026-03-01T00:00:00Z"})
+	// Two topics fetch cleanly first, then the network goes away.
+	for i := 7001; i <= 7002; i++ {
+		topics = append(topics, content.TocTopic{TopicId: i, Title: "Good", LastModifiedDate: "2026-03-01T00:00:00Z"})
+		f.topics[i] = map[string]any{"TopicId": i, "Title": "Good"}
+	}
+	for i := 7003; i <= 7008; i++ {
+		topics = append(topics, content.TocTopic{TopicId: i, Title: "Gone", LastModifiedDate: "2026-03-01T00:00:00Z"})
 		f.hijackTopics[i] = true
 	}
 	f.courses = []d2lCourse{{OrgUnitId: json.Number("4700"), Name: "Bio", Code: "BIO", IsActive: true}}
@@ -84,21 +89,37 @@ func TestRunAbortsAfterConsecutiveTransportFailures(t *testing.T) {
 	srv := httptest.NewServer(f.handler())
 	defer srv.Close()
 
-	_, err := Run(Options{Root: t.TempDir(), Jar: newJar(t), BaseURL: srv.URL})
+	dir := t.TempDir()
+	_, err := Run(Options{Root: dir, Jar: newJar(t), BaseURL: srv.URL})
 	if err == nil {
 		t.Fatal("expected the run to abort on consecutive transport failures")
 	}
 	if !strings.Contains(err.Error(), "consecutive transport failures") {
 		t.Errorf("err = %v, want a consecutive-transport-failure abort", err)
 	}
-	// Six topics were queued; the pass must stop at the bound, not
-	// grind through all of them during an outage.
+	// Six broken topics were queued; the pass must stop at the bound,
+	// not grind through all of them during an outage.
 	attempts := 0
-	for i := 7001; i <= 7006; i++ {
+	for i := 7003; i <= 7008; i++ {
 		attempts += f.topicCallCount(i)
 	}
 	if attempts > maxConsecutiveTransportFailures {
-		t.Errorf("%d topic attempts, want at most %d", attempts, maxConsecutiveTransportFailures)
+		t.Errorf("%d transport attempts, want at most %d", attempts, maxConsecutiveTransportFailures)
+	}
+	// Whatever was fetched before the outage must stay archived: the
+	// index is persisted on the abort path so the blobs already on disk
+	// keep a reference.
+	ci, lerr := LoadCourseIndex(dir, "4700")
+	if lerr != nil {
+		t.Fatalf("LoadCourseIndex: %v", lerr)
+	}
+	for _, id := range []int{7001, 7002} {
+		if ci.Topics[id] == nil || ci.Topics[id].Current == "" {
+			t.Errorf("topic %d fetched before the outage was not persisted in the index", id)
+		}
+	}
+	if ci.Topics[7003] != nil {
+		t.Error("a topic that never arrived must not be in the index")
 	}
 }
 

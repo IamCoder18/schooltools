@@ -819,6 +819,18 @@ func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats,
 	ci.Code = c.Code
 	ci.IsActive = c.IsActive
 
+	// abortWithIndex persists whatever the pass has already archived
+	// before returning a fatal error. The store is append-only at the
+	// blob layer, so dropping the index would leave blobs on disk that
+	// nothing points at and silently discard the topics fetched so far.
+	abortWithIndex := func(cause error) (courseStats, error) {
+		ci.UpdatedAt = now()
+		if serr := SaveCourseIndex(opts.Root, c.OrgUnitId, ci); serr != nil {
+			return s, errors.Join(cause, serr)
+		}
+		return s, cause
+	}
+
 	type queued struct {
 		topicID int
 		topic   content.TocTopic
@@ -864,13 +876,13 @@ func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats,
 			body, ferr := fetchTopicFor(opts.baseURL(), opts.Jar, c.OrgUnitId, q.topicID)
 			if ferr != nil {
 				if errors.Is(ferr, errSessionExpired) {
-					return s, ferr
+					return abortWithIndex(ferr)
 				}
 				if errors.Is(ferr, errTransport) {
 					transportFails++
 					if transportFails >= maxConsecutiveTransportFailures {
-						return s, fmt.Errorf("network unreachable: aborted after %d consecutive transport failures (last: %v)",
-							transportFails, ferr)
+						return abortWithIndex(fmt.Errorf("network unreachable: aborted after %d consecutive transport failures (last: %v)",
+							transportFails, ferr))
 					}
 				}
 				s.failed++
@@ -922,13 +934,13 @@ func archiveCourseV2(opts Options, c Course, now func() time.Time) (courseStats,
 		bodyBytes, contentType, berr := downloadFileBody(opts.Jar, bodyURL, opts.baseURL())
 		if berr != nil {
 			if errors.Is(berr, errSessionExpired) {
-				return s, berr
+				return abortWithIndex(berr)
 			}
 			if errors.Is(berr, errTransport) {
 				transportFails++
 				if transportFails >= maxConsecutiveTransportFailures {
-					return s, fmt.Errorf("network unreachable: aborted after %d consecutive transport failures (last: %v)",
-						transportFails, berr)
+					return abortWithIndex(fmt.Errorf("network unreachable: aborted after %d consecutive transport failures (last: %v)",
+						transportFails, berr))
 				}
 			}
 			if opts.Verbose {
