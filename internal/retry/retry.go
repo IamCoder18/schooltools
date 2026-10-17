@@ -19,6 +19,13 @@ var RetryableNetworkCodes = map[string]struct{}{
 type Options struct {
 	Attempts    int
 	BaseDelayMs int
+	// DelayFor lets an error raise the floor on the next wait, for cases
+	// where the server states its own retry hint (an HTTP Retry-After, a
+	// rate-limit Retry-After). It can only lengthen the computed backoff,
+	// never shorten it, so a caller cannot accidentally hammer sooner than
+	// the exponential schedule already allows. Returning 0 leaves the
+	// backoff untouched. Nil disables the hook.
+	DelayFor func(attempt int, err error) time.Duration
 }
 
 func DefaultOptions() Options { return Options{Attempts: 3, BaseDelayMs: 250} }
@@ -69,12 +76,31 @@ func pow2(n int) float64 {
 
 func sleep(d time.Duration) { time.Sleep(d) }
 
+// jitterDelay is the same random component backoff adds, in the same units.
+// It exists so a server-supplied hint can raise the wait without flattening
+// the randomization out of it.
+func jitterDelay(base int) time.Duration {
+	if base <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Intn(base+1)) * time.Millisecond
+}
+
 // WithRetry calls fn up to opts.Attempts times, sleeping with exponential backoff
 // + jitter between attempts. shouldRetry decides whether a given error is worth
 // retrying; the default is any error containing known transient markers.
+//
+// The jitter in backoff matters as much as the backoff itself: without it
+// every caller that fails at the same moment retries in lockstep and
+// re-creates the thundering herd the backoff was meant to break up.
 func WithRetry[T any](fn func() (T, error), opts Options, shouldRetry func(error) bool) (T, error) {
 	if opts.Attempts == 0 {
-		opts = DefaultOptions()
+		// Substitute field by field. Replacing the whole struct would drop a
+		// caller-supplied DelayFor, so a caller who passes only a hint would
+		// silently lose it.
+		def := DefaultOptions()
+		opts.Attempts = def.Attempts
+		opts.BaseDelayMs = def.BaseDelayMs
 	}
 	if shouldRetry == nil {
 		shouldRetry = IsRetryable
@@ -90,7 +116,17 @@ func WithRetry[T any](fn func() (T, error), opts Options, shouldRetry func(error
 		if i == opts.Attempts-1 || !shouldRetry(err) {
 			return zero, err
 		}
-		sleep(backoff(i, opts.BaseDelayMs))
+		d := backoff(i, opts.BaseDelayMs)
+		if opts.DelayFor != nil {
+			if hint := opts.DelayFor(i, err); hint > d {
+				// Treat the hint as a floor, not a replacement. Every client
+				// handed the same Retry-After value would otherwise wake at
+				// the same instant and recreate the burst the backoff was
+				// there to avoid, so the jitter goes back on top.
+				d = hint + jitterDelay(opts.BaseDelayMs)
+			}
+		}
+		sleep(d)
 	}
 	return zero, last
 }

@@ -6,6 +6,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `archive update` spaces its D2L requests out instead of firing them as
+  fast as the network returns them. Each gap is a randomized duration in
+  `[N, 2N)` rather than a fixed `N`, so consecutive requests don't land in
+  an evenly-spaced pattern. Tunable with `--request-interval`; the default
+  is 50ms and `--request-interval 0` disables pacing entirely. Because the
+  gap is measured from the previous request's start, a slow response
+  already satisfies the floor and costs no extra wall-clock.
+- `archive update` now retries throttled and temporarily-failing requests
+  (HTTP 429 and 5xx) for up to 3 attempts with exponential backoff, jitter,
+  and `Retry-After` support in both delta-seconds and HTTP-date form.
+  A `Retry-After` hint is capped at 60s so a hostile or broken value cannot
+  stall a pass. Permanent failures (404, 400) and expired sessions are
+  still not retried.
+
+### Fixed
+- `archive update` leaked a connection per TOC fetch and per course-list
+  page: the response body was decoded but never closed. Retries made those
+  leaks multiply, so they are closed now.
+
 ## [0.3.0] - 2026-10-15
 
 ### Added
