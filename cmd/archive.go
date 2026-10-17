@@ -254,6 +254,10 @@ var archiveUpdateCmd = &cobra.Command{
 }
 
 func runArchiveUpdate(args []string) error {
+	if archiveUpdateInterval < 0 {
+		return fmt.Errorf("--request-interval must not be negative (got %s); pass 0 to disable pacing", archiveUpdateInterval)
+	}
+
 	abs, err := filepath.Abs(archiveDir)
 	if err != nil {
 		return err

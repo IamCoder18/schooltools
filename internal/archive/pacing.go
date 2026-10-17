@@ -224,9 +224,10 @@ func (o Options) limiter() *pacer {
 		case *o.RequestInterval == 0:
 			floor = 0
 		}
-		// A negative interval is a typo, and honoring it would silently drop
-		// the protection pacing exists to provide. It falls back to the
-		// default instead; 0 stays the only way to turn pacing off.
+		// A negative interval is a typo. The CLI rejects one outright;
+		// for library callers, fall back to the default rather than
+		// silently disabling the protection pacing exists to provide. Zero
+		// stays the only way to turn pacing off.
 	}
 	return newPacer(floor)
 }

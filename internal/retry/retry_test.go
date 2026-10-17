@@ -81,8 +81,12 @@ func TestDelayForRaisesTheFloor(t *testing.T) {
 		}
 		return "ok", nil
 	}, retry.Options{
-		// The hint dwarfs the backoff, so elapsed time proves the hint was
-		// honoured. Ignoring DelayFor would finish in ~1ms.
+		// Attempts must be set explicitly. Leaving it zero makes WithRetry
+		// substitute the 250ms default BaseDelayMs, and that backoff alone
+		// spans 250-500ms — wide enough to satisfy the 300ms assertion below
+		// with DelayFor ignored entirely. Pinning Attempts keeps the base at
+		// 1ms, so only the hint can get the run past 300ms.
+		Attempts:    2,
 		BaseDelayMs: 1,
 		DelayFor:    func(int, error) time.Duration { return 300 * time.Millisecond },
 	}, retry.IsRetryable)
