@@ -61,6 +61,7 @@ var (
 	archiveUpdateNoBodies  bool
 	archiveUpdateNoRefresh bool
 	archiveUpdateWait      bool
+	archiveUpdateInterval  time.Duration
 
 	archiveFindExt  string
 	archiveFindType string
@@ -99,6 +100,7 @@ func init() {
 	archiveUpdateCmd.Flags().BoolVar(&archiveUpdateNoBodies, "no-bodies", false, "Skip file-body downloads (metadata only)")
 	archiveUpdateCmd.Flags().BoolVar(&archiveUpdateNoRefresh, "no-auto-refresh", false, "Do not re-run login if the saved session has expired")
 	archiveUpdateCmd.Flags().BoolVar(&archiveUpdateWait, "wait", false, "Block instead of failing when another archive run holds the lock")
+	archiveUpdateCmd.Flags().DurationVar(&archiveUpdateInterval, "request-interval", archive.DefaultRequestInterval, "Floor on the gap between D2L requests; the real gap is randomized above it, so 0 disables pacing entirely")
 
 	archiveFindCmd.Flags().StringVar(&archiveFindExt, "ext", "", "Filter by URL extension (e.g. pdf, docx)")
 	archiveFindCmd.Flags().StringVar(&archiveFindType, "type", "", "Filter by topic type (File, Link)")
@@ -252,6 +254,10 @@ var archiveUpdateCmd = &cobra.Command{
 }
 
 func runArchiveUpdate(args []string) error {
+	if archiveUpdateInterval < 0 {
+		return fmt.Errorf("--request-interval must not be negative (got %s); pass 0 to disable pacing", archiveUpdateInterval)
+	}
+
 	abs, err := filepath.Abs(archiveDir)
 	if err != nil {
 		return err
@@ -292,13 +298,14 @@ func runArchiveUpdate(args []string) error {
 	scope := mergeScope(args, archiveCourses)
 	start := time.Now()
 	result, err := archive.Run(archive.Options{
-		Root:          abs,
-		Jar:           ens.Jar,
-		Verbose:       archiveVerbose,
-		Quiet:         archiveJSON || archiveQuiet,
-		CourseIDs:     scope,
-		Progress:      progressAdapter(hud),
-		DownloadFiles: !archiveUpdateNoBodies,
+		Root:            abs,
+		Jar:             ens.Jar,
+		Verbose:         archiveVerbose,
+		Quiet:           archiveJSON || archiveQuiet,
+		CourseIDs:       scope,
+		Progress:        progressAdapter(hud),
+		DownloadFiles:   !archiveUpdateNoBodies,
+		RequestInterval: &archiveUpdateInterval,
 	})
 	if err != nil {
 		return err
@@ -360,12 +367,13 @@ func runArchiveUpdateDryRun(args []string, abs string) error {
 	scope := mergeScope(args, archiveCourses)
 	start := time.Now()
 	result, err := archive.Diff(archive.Options{
-		Root:          abs,
-		Jar:           ens.Jar,
-		Verbose:       archiveVerbose,
-		Quiet:         archiveJSON || archiveQuiet,
-		CourseIDs:     scope,
-		DownloadFiles: !archiveUpdateNoBodies,
+		Root:            abs,
+		Jar:             ens.Jar,
+		Verbose:         archiveVerbose,
+		Quiet:           archiveJSON || archiveQuiet,
+		CourseIDs:       scope,
+		DownloadFiles:   !archiveUpdateNoBodies,
+		RequestInterval: &archiveUpdateInterval,
 	})
 	if err != nil {
 		return err
