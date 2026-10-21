@@ -330,6 +330,34 @@ listing.
 
 ---
 
+## 21. Closed dropbox folders go dark: `submissions` 403s while `feedback` still reads
+
+**Observed:** On Science 10 folder `4000001` ("Lab Report
+Feedback"), once the folder's `Availability.EndDate` (2026-10-19T04:00Z)
+passed, CBE answers `403 {"Errors":[{"Message":"Not Authorized"}]}` for
+every student-facing submissions read — `submissions/mysubmissions/`,
+`submissions/user/<self>` (slash and no-slash forms), and
+`folders/<id>/access/?userId=<self>` were all probed on 2026-10-20/21.
+Meanwhile `feedback/user/<self>` on the same folder returned `200` with
+the graded rubric (13/14). Earlier, while the folder was still open, the
+same `mysubmissions` route correctly returned `200` + empty array for a
+folder with no submissions (Course B folder `4000002` on 2026-10-21), so
+the CLI can tell "empty" from "wall" on live folders — just not through
+the wall.
+
+**Impact:** A student session can never enumerate its own submissions
+after the dropbox's availability window closes, even when D2L holds and
+grades the work. The CLI now reports the 403 refusal verbatim (it used
+to print "you have not submitted yet", a false negative that caused a
+wrong conclusion on 2026-10-20). Feedback remains fetchable past the
+wall, so `assignment feedback <folderId>` is the reliable post-close
+status check.
+
+**Not fixable CLI-side:** it's a tenant-side D2L ACL. Work-arounds are
+the Brightspace web UI or an assessor's view.
+
+---
+
 ## Quick-fix priority suggestion
 
 If only a few of these get fixed, the highest-impact ones for a CLI

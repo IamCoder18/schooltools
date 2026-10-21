@@ -22,6 +22,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   still not retried.
 
 ### Fixed
+- `assignment feedback` crashed with
+  `cannot unmarshal object into ... Feedback.Feedback of type string` on
+  any actually-graded folder: D2L returns `Feedback` as a `{Text, Html}`
+  object, names the grade symbol `GradedSymbol` (not `GradeSymbol`), and
+  additionally carries `IsGraded`, `RubricAssessments`, `Files`, and
+  `Links`, none of which the struct had. The command now decodes the
+  real envelope and renders score / grade symbol / status / comment /
+  per-rubric overall and per-criterion scores (with note text) in the
+  default view; `--json` emits the full envelope.
+- `assignment feedback <folderId> me` put `me` in D2L's entityType
+  URL slot, built `feedback/me/me`, got a 404, and reported "No
+  feedback for this folder (no submission to grade yet)" — a false
+  negative on a graded folder. `me` is now recognized in the entityType
+  slot and resolves to the caller's own id, like the bare
+  `assignment feedback <folderId>` invocation.
+- `assignment submissions` and `assignment feedback` mapped any HTTP 403
+  to "you have not submitted yet" / "no submission to grade yet". On a
+  folder whose availability window has closed (its `EndDate` passed),
+  D2L refuses the submissions reads with 403 while the work is fully
+  recorded — the messages were unprovable false negatives. Both now
+  report the refusal and point at the availability window instead; 404
+  on the feedback route alone still means "nothing graded yet", since
+  feedback on a live folder reads 200 even inside the wall.
+- `assignment feedback <folderId> <entityId> download <fileId>` ignored
+  the `<entityId>` positional and always downloaded the caller's own
+  attachment (it unconditionally resolved whoami). The positional is now
+  honored, `me` defaults are optional, and the 4-arg form validates the
+  `download` slot; the command takes 3 args ("mine") or 4.
+- The `assignment` package doc showed `--course` before the subcommand
+  (`assignment --course <id> list`), which cobra rejects; examples now
+  use `assignment list --course <id>` etc.
 - `archive update` leaked a connection per TOC fetch and per course-list
   page: the response body was decoded but never closed. Retries made those
   leaks multiply, so they are closed now.
