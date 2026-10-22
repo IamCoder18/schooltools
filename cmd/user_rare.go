@@ -2,21 +2,19 @@
 //
 // Deleted commands (kept here as comments for the git history to show):
 //   - locker    — removed; the CBE tenant returns an empty locker for
-//                 students, so the command had no real value.
+//     students, so the command had no real value.
 //   - ePortfolio — removed because the CBE tenant disables the eP product
-//                 for students (every /d2l/api/eP/<v>/ call returns 403).
+//     for students (every /d2l/api/eP/<v>/ call returns 403).
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/url"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/aarav/schooltools/internal/dupdata"
+	"github.com/aarav/schooltools/internal/render"
 	"github.com/aarav/schooltools/internal/session"
 	"github.com/aarav/schooltools/internal/ua"
 )
@@ -98,22 +96,17 @@ func runAwardList() error {
 		return err
 	}
 	if awardJSON {
-		b, _ := json.MarshalIndent(items, "", "  ")
-		fmt.Println(string(b))
-		return nil
+		return render.PrintJSON(render.NewList(items))
 	}
 	if len(items) == 0 {
-		fmt.Println("No awards issued to you.")
+		fmt.Print(render.Empty("No awards issued to you."))
 		return nil
 	}
-	fmt.Printf("%d award%s\n", len(items), plural(len(items)))
+	fmt.Print(render.Title("Awards"))
 	for _, a := range items {
-		when := a.IssuedDate
-		if len(when) > 16 {
-			when = when[:16]
-		}
-		fmt.Printf("  %s\t%s\t%s\n", a.Id, when, a.Title)
+		fmt.Print(awardPanel(a))
 	}
+	fmt.Print(render.Hint("schooltools award get <id>   for one award in full"))
 	return nil
 }
 
@@ -127,8 +120,21 @@ func runAwardGet(id string) error {
 	if err := dupdata.FetchJSON(raw, ens.Jar, &out); err != nil {
 		return err
 	}
-	b, _ := json.MarshalIndent(out, "", "  ")
-	fmt.Println(string(b))
+	if awardJSON {
+		return render.PrintJSON(out)
+	}
+	var b strings.Builder
+	b.WriteString(render.Title(out.Title))
+	rows := append([]render.Row{{Key: "Award", Value: out.Id}}, awardRows(out)...)
+	if out.CertificateId != "" {
+		rows = append(rows, render.Row{Key: "Certificate", Value: out.CertificateId})
+	}
+	b.WriteString(render.KV(rows...))
+	b.WriteString(awardDescription(out))
+	if out.CertificateId != "" {
+		b.WriteString(render.Hint("schooltools award download %s", out.CertificateId))
+	}
+	fmt.Print(b.String())
 	return nil
 }
 
@@ -142,7 +148,47 @@ func runAwardDownload(certID string) error {
 	return asgDownloadFile(ens.Jar, raw, "certificate-"+certID+".pdf")
 }
 
-// suppress unused-import warnings for imports used only by sibling files.
-var _ = strconv.Itoa
-var _ = url.Parse
-var _ = strings.HasPrefix
+func awardCourseLabel(a Award) string {
+	if a.OrgUnitName != "" {
+		return a.OrgUnitName
+	}
+	if a.OrgUnitId != 0 {
+		return fmt.Sprintf("org %d", a.OrgUnitId)
+	}
+	return ""
+}
+
+func awardRows(a Award) []render.Row {
+	rows := []render.Row{}
+	if a.AwardType != "" {
+		rows = append(rows, render.Row{Key: "Type", Value: a.AwardType})
+	}
+	rows = append(rows, render.Row{Key: "Issued", Value: render.Date(a.IssuedDate)})
+	if a.ExpiryDate != "" {
+		rows = append(rows, render.Row{Key: "Expires", Value: render.Date(a.ExpiryDate)})
+	}
+	if c := awardCourseLabel(a); c != "" {
+		rows = append(rows, render.Row{Key: "Course", Value: c})
+	}
+	return rows
+}
+
+func awardDescription(a Award) string {
+	d := strings.TrimSpace(htmlToText(a.Description))
+	if d == "" {
+		return ""
+	}
+	return render.Section("Description") + render.Wrap(d, render.Width()) + "\n"
+}
+
+func awardPanel(a Award) string {
+	var b strings.Builder
+	b.WriteString(render.Section(a.Title))
+	rows := awardRows(a)
+	if a.CertificateId != "" {
+		rows = append(rows, render.Row{Key: "PDF", Value: "schooltools award download " + a.CertificateId})
+	}
+	b.WriteString(render.KV(rows...))
+	b.WriteString(awardDescription(a))
+	return b.String()
+}

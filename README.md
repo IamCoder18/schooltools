@@ -79,10 +79,49 @@ via flags, no `me` parent.
 --all                    paginate fully
 --limit N                cap items returned
 --json                   machine-readable output
+--no-related             skip the extra lookups a `get` does
 --yes                    skip confirmation on bulk destructive ops
 ```
 
 Persistent root flags: `--no-auth-log`, `--version`, `-h/--help`.
+
+## What the output looks like
+
+Every command prints a **report**, not a dump of raw fields.
+
+- **Lists** are tables with real column headers, sized to your terminal.
+- **Detail and `get`** views are aligned key/value panels, with `Section`
+  headings separating blocks.
+- **Times** read like `Mon, Oct 19 2026, 4:00 AM  ·  2 days ago`. Datetimes
+  are shown in your local timezone; date-only values (like an award's
+  issue date) are shown as-is.
+- **Status** is a word (`open`, `closed`, `overdue`, `graded`, `pending`),
+  coloured on a TTY and plain under `NO_COLOR` or when piped.
+- **Empty states** are a dim sentence — `No feedback released yet.` — and
+  most reports end with a `→ schooltools …` hint for the next command.
+
+`--json` emits an envelope with a `count` field for lists:
+
+```json
+{ "count": 2, "items": [ ... ] }
+```
+
+Single-record and aggregated `get` output is one object with named
+sub-objects (`folder`, `submissions`, `feedback`, `quiz`, `attempts`,
+`news`, `related`).
+
+### Proactive `get` views
+
+`assignment get`, `quiz get` and `course get` fetch the related records
+themselves and render one combined report. For example
+`assignment get <folderId> --course <id>` shows the folder and its window,
+the instructions and attachments, the **full rubric** by criterion name,
+your submissions with their files and the exact download command for each,
+and the released feedback scored as `13 / 14 points  →  Level 4`.
+
+Those extra lookups run concurrently and degrade quietly when D2L refuses
+(a closed dropbox blocks submissions but still serves feedback). Pass
+`--no-related` to fetch only the primary record.
 
 ## Session file
 

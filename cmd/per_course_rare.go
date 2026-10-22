@@ -16,7 +16,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/aarav/schooltools/internal/dupdata"
+	"github.com/aarav/schooltools/internal/render"
 	"github.com/aarav/schooltools/internal/session"
+	"github.com/aarav/schooltools/internal/table"
 	"github.com/aarav/schooltools/internal/ua"
 )
 
@@ -34,25 +36,45 @@ var (
 )
 
 type NewsItem struct {
-	Id            json.Number `json:"Id"`
-	OrgUnitId     int         `json:"OrgUnitId,omitempty"`
-	Title         string      `json:"Title"`
-	Body          any         `json:"Body"`
-	StartDate     string      `json:"StartDate"`
-	EndDate       string      `json:"EndDate,omitempty"`
-	IsPinned      bool        `json:"IsPinned"`
-	IsGlobal      bool        `json:"IsGlobal,omitempty"`
-	HasAttachment bool        `json:"HasAttachment"`
+	Id               json.Number `json:"Id"`
+	OrgUnitId        int         `json:"OrgUnitId,omitempty"`
+	Title            string      `json:"Title"`
+	Body             any         `json:"Body"`
+	StartDate        string      `json:"StartDate"`
+	EndDate          string      `json:"EndDate,omitempty"`
+	IsPinned         bool        `json:"IsPinned"`
+	IsGlobal         bool        `json:"IsGlobal,omitempty"`
+	HasAttachment    bool        `json:"HasAttachment"`
+	CreatedDate      string      `json:"CreatedDate"`
+	LastModifiedDate string      `json:"LastModifiedDate"`
+	CreatedBy        *int        `json:"CreatedBy"`
+	IsHidden         bool        `json:"IsHidden"`
 
 	// Fields added at LE 1.97+ — surfaced when the tenant is on a new
 	// enough version. Older versions just leave them at the zero value.
-	PinnedDate                *string `json:"PinnedDate"`
-	IsPublished               bool    `json:"IsPublished"`
-	IsStartDateShown          bool    `json:"IsStartDateShown"`
-	IsAuthorInfoShown         bool    `json:"IsAuthorInfoShown"`
-	ShowOnlyInCourseOfferings bool    `json:"ShowOnlyInCourseOfferings"`
-	SortOrder                 int     `json:"SortOrder"`
-	Attachments               []any   `json:"Attachments,omitempty"`
+	PinnedDate                *string          `json:"PinnedDate"`
+	IsPublished               bool             `json:"IsPublished"`
+	IsStartDateShown          bool             `json:"IsStartDateShown"`
+	IsAuthorInfoShown         bool             `json:"IsAuthorInfoShown"`
+	ShowOnlyInCourseOfferings bool             `json:"ShowOnlyInCourseOfferings"`
+	SortOrder                 int              `json:"SortOrder"`
+	Attachments               []NewsAttachment `json:"Attachments,omitempty"`
+}
+
+type NewsAttachment struct {
+	FileId   int    `json:"FileId"`
+	FileName string `json:"FileName"`
+	Size     int64  `json:"Size"`
+}
+
+func (n NewsItem) Date() string {
+	if n.StartDate != "" {
+		return n.StartDate
+	}
+	if n.CreatedDate != "" {
+		return n.CreatedDate
+	}
+	return n.LastModifiedDate
 }
 
 // NewsBody holds the {Html,Text} shape we get from D2L. Used by --json to
@@ -236,6 +258,7 @@ func htmlToText(s string) string {
 	)
 	out := r.Replace(b.String())
 	out = html.UnescapeString(out)
+	out = strings.ReplaceAll(out, "\u00a0", " ")
 	out = collapseSpaces(out)
 	return strings.TrimSpace(out)
 }
@@ -292,25 +315,41 @@ func runNewsListOneCourse(jar *cookiejar.Jar, courseID string) error {
 		return nil
 	}
 	if len(items) == 0 {
-		fmt.Println("No announcements in this course.")
+		fmt.Print(render.Empty("No announcements in this course."))
 		return nil
 	}
-	fmt.Printf("%d announcement%s in course %s\n", len(items), plural(len(items)), courseID)
-	for _, n := range items {
-		when := n.StartDate
-		if len(when) > 16 {
-			when = when[:16]
-		}
-		flags := ""
-		if n.IsPinned {
-			flags += "[pinned] "
-		}
-		if !n.IsPublished {
-			flags += "[draft] "
-		}
-		fmt.Printf("  %s\t%s\t%s%s\n", n.Id.String(), when, flags, truncate(n.Title, 80))
-	}
+	fmt.Print(render.Title("Announcements · " + courseID))
+	fmt.Print(newsTable(items))
+	fmt.Print(render.Hint("schooltools news get <id> --course %s", courseID))
 	return nil
+}
+
+func newsFlags(n NewsItem) string {
+	if !n.IsPublished {
+		return render.Warn("draft")
+	}
+	if n.IsPinned {
+		return render.Accent("pinned")
+	}
+	return render.Muted("published")
+}
+
+func newsTable(items []NewsItem) string {
+	rows := make([][]string, len(items))
+	for i, n := range items {
+		rows[i] = []string{
+			n.Id.String(),
+			render.Date(n.Date()),
+			render.Truncate(render.Rel(n.Date()), 12),
+			newsFlags(n),
+			n.Title,
+		}
+	}
+	return table.Render(table.Options{
+		Headers: []string{"ID", "Posted", "Ago", "Status", "Title"},
+		Widths:  table.Widths([]table.ColumnSpec{table.Fixed(9), table.Fixed(16), table.Fixed(12), table.Fixed(11), table.Flex(34)}, table.TerminalWidth()),
+		Rows:    rows,
+	})
 }
 
 func runNewsListCrossCourse(jar *cookiejar.Jar) error {
@@ -375,22 +414,27 @@ func runNewsListCrossCourse(jar *cookiejar.Jar) error {
 		return nil
 	}
 	if len(all) == 0 {
-		fmt.Println("No announcements across any of your courses.")
+		fmt.Print(render.Empty("No announcements across any of your courses."))
 		return nil
 	}
-	fmt.Printf("%d announcement%s across %d course%s\n",
-		len(all), plural(len(all)), len(courseIDs), plural(len(courseIDs)))
-	for _, f := range all {
-		when := f.news.StartDate
-		if len(when) > 16 {
-			when = when[:16]
+	fmt.Print(render.Title("Announcements"))
+	rows := make([][]string, len(all))
+	for i, f := range all {
+		rows[i] = []string{
+			f.news.Id.String(),
+			render.Truncate(render.Rel(f.news.Date()), 12),
+			render.Date(f.news.Date()),
+			newsFlags(f.news),
+			render.Truncate(fmt.Sprintf("%d", f.org), 10),
+			f.news.Title,
 		}
-		pin := ""
-		if f.news.IsPinned {
-			pin = "[pinned] "
-		}
-		fmt.Printf("  %s\t%s\torg=%d\t%s%s\n", f.news.Id.String(), when, f.org, pin, truncate(f.news.Title, 80))
 	}
+	fmt.Print(table.Render(table.Options{
+		Headers: []string{"ID", "Ago", "Posted", "Status", "Course", "Title"},
+		Widths:  table.Widths([]table.ColumnSpec{table.Fixed(9), table.Fixed(12), table.Fixed(16), table.Fixed(11), table.Fixed(10), table.Flex(32)}, table.TerminalWidth()),
+		Rows:    rows,
+	}))
+	fmt.Print(render.Hint("schooltools news get <id> --course <orgUnitId>"))
 	return nil
 }
 
@@ -552,9 +596,34 @@ func printNewsItem(n NewsItem, sourceCourse string) error {
 		fmt.Println(string(b))
 		return nil
 	}
-	b, _ := json.MarshalIndent(n, "", "  ")
-	fmt.Println(string(b))
+	var b strings.Builder
+	b.WriteString(render.Title(n.Title))
+	b.WriteString(render.KV(
+		render.Row{Key: "Post", Value: n.Id.String()},
+		render.Row{Key: "Posted", Value: render.When(n.Date())},
+		render.Row{Key: "Status", Value: newsFlags(n)},
+		render.Row{Key: "Course", Value: sourceCourse},
+	))
+	if body := newsBodyText(n); body != "" {
+		b.WriteString(render.Section("Body"))
+		b.WriteString(render.Wrap(body, render.Width()) + "\n")
+	}
+	if len(n.Attachments) > 0 {
+		b.WriteString(render.Section("Attachments"))
+		for _, a := range n.Attachments {
+			b.WriteString(render.Bullets(fmt.Sprintf("%s  (%s)   → schooltools news attachment %s %d",
+				a.FileName, render.HumanBytes(a.Size), n.Id.String(), a.FileId)))
+		}
+	}
+	b.WriteString(render.Section("Next"))
+	b.WriteString(render.Hint("schooltools news --course %s", sourceCourse))
+	fmt.Print(b.String())
 	return nil
+}
+
+func newsBodyText(n NewsItem) string {
+	text, _ := flattenBody(n, "text")
+	return text
 }
 
 func runNewsAttachment(newsID, fileID string) error {
@@ -663,22 +732,14 @@ func runGradeRoot() error {
 			return err
 		}
 		if gradeJSON {
-			b, _ := json.MarshalIndent(items, "", "  ")
-			fmt.Println(string(b))
-			return nil
+			return render.PrintJSON(render.NewList(items))
 		}
 		if len(items) == 0 {
-			fmt.Println("No course finals released yet.")
+			fmt.Print(render.Empty("No course finals released yet."))
 			return nil
 		}
-		fmt.Printf("%d course final%s\n", len(items), plural(len(items)))
-		for _, g := range items {
-			score := g.DisplayedGrade
-			if score == "" {
-				score = fmt.Sprintf("%.2f / %.2f", g.PointsNumerator, g.PointsDenominator)
-			}
-			fmt.Printf("  %d\t%s\t%s\n", g.GradeObjectId, score, g.GradeObjectName)
-		}
+		fmt.Print(render.Title("Course finals"))
+		fmt.Print(gradeTable(items))
 		return nil
 	}
 	if gradeFinal {
@@ -689,11 +750,10 @@ func runGradeRoot() error {
 			return err
 		}
 		if gradeJSON {
-			b, _ := json.MarshalIndent(out, "", "  ")
-			fmt.Println(string(b))
-			return nil
+			return render.PrintJSON(out)
 		}
-		fmt.Printf("Course %s final: %s (%s)\n", gradeCourse, out.DisplayedGrade, out.GradeSchemeSymbol)
+		fmt.Print(render.Title("Course final · " + gradeCourse))
+		fmt.Print(gradeKV(out))
 		return nil
 	}
 	raw := fmt.Sprintf("%s/d2l/api/le/%s/%s/grades/values/myGradeValues/",
@@ -703,23 +763,61 @@ func runGradeRoot() error {
 		return err
 	}
 	if gradeJSON {
-		b, _ := json.MarshalIndent(items, "", "  ")
-		fmt.Println(string(b))
-		return nil
+		return render.PrintJSON(render.NewList(items))
 	}
 	if len(items) == 0 {
-		fmt.Println("No grades found for this course.")
+		fmt.Print(render.Empty("No grades found for this course."))
 		return nil
 	}
-	fmt.Printf("%d grade item%s in course %s\n", len(items), plural(len(items)), gradeCourse)
-	for _, g := range items {
-		score := fmt.Sprintf("%.2f / %.2f", g.PointsNumerator, g.PointsDenominator)
-		if g.DisplayedGrade != "" {
-			score = g.DisplayedGrade
-		}
-		fmt.Printf("  %d\t%s\t%s\n", g.GradeObjectId, score, g.GradeObjectName)
-	}
+	fmt.Print(render.Title("Grades · " + gradeCourse))
+	fmt.Print(gradeTable(items))
 	return nil
+}
+
+func gradeScore(g GradeValue) string {
+	if g.DisplayedGrade != "" {
+		return g.DisplayedGrade
+	}
+	return fmt.Sprintf("%g / %g", g.PointsNumerator, g.PointsDenominator)
+}
+
+func gradeTable(items []GradeValue) string {
+	rows := make([][]string, len(items))
+	for i, g := range items {
+		status := render.Muted("not released")
+		if g.IsReleased {
+			status = render.OK("released")
+		}
+		rows[i] = []string{
+			strconv.Itoa(g.GradeObjectId),
+			g.GradeObjectName,
+			render.Accent(gradeScore(g)),
+			fmt.Sprintf("%g / %g", g.PointsNumerator, g.PointsDenominator),
+			g.GradeSchemeSymbol,
+			status,
+		}
+	}
+	return table.Render(table.Options{
+		Headers: []string{"ID", "Item", "Score", "Out of", "Symbol", "Status"},
+		Widths:  table.Widths([]table.ColumnSpec{table.Fixed(9), table.Flex(28), table.Fixed(12), table.Fixed(14), table.Fixed(9), table.Fixed(14)}, table.TerminalWidth()),
+		Rows:    rows,
+	})
+}
+
+func gradeKV(g GradeValue) string {
+	rows := []render.Row{
+		{Key: "Score", Value: render.Accent(gradeScore(g))},
+		{Key: "Out of", Value: fmt.Sprintf("%g points", g.PointsDenominator)},
+	}
+	if g.GradeSchemeSymbol != "" {
+		rows = append(rows, render.Row{Key: "Symbol", Value: g.GradeSchemeSymbol})
+	}
+	if g.IsReleased {
+		rows = append(rows, render.Row{Key: "Status", Value: render.OK("released")})
+	} else {
+		rows = append(rows, render.Row{Key: "Status", Value: render.Warn("not released yet")})
+	}
+	return render.KV(rows...)
 }
 
 func runGradeGet(objectID string) error {
@@ -736,8 +834,11 @@ func runGradeGet(objectID string) error {
 	if err := dupdata.FetchJSON(raw, ens.Jar, &out); err != nil {
 		return err
 	}
-	b, _ := json.MarshalIndent(out, "", "  ")
-	fmt.Println(string(b))
+	if gradeJSON {
+		return render.PrintJSON(out)
+	}
+	fmt.Print(render.Title(out.GradeObjectName))
+	fmt.Print(gradeKV(out))
 	return nil
 }
 
@@ -840,19 +941,34 @@ func runDisList() error {
 		return err
 	}
 	if disJSON {
-		b, _ := json.MarshalIndent(items, "", "  ")
-		fmt.Println(string(b))
-		return nil
+		return render.PrintJSON(render.NewList(items))
 	}
 	if len(items) == 0 {
-		fmt.Println("No forums found for this course.")
+		fmt.Print(render.Empty("No forums in this course."))
 		return nil
 	}
-	fmt.Printf("%d forum%s\n", len(items), plural(len(items)))
-	for _, f := range items {
-		fmt.Printf("  %s\t%d topic%s, %d post%s\t%s\n",
-			f.Id.String(), f.NumTopics, plural(f.NumTopics), f.NumPosts, plural(f.NumPosts), f.Name)
+	fmt.Print(render.Title("Discussion forums · " + courseID))
+	rows := make([][]string, len(items))
+	for i, f := range items {
+		status := render.Muted("open")
+		if f.IsHidden {
+			status = render.Bad("hidden")
+		}
+		rows[i] = []string{
+			f.Id.String(),
+			status,
+			render.Count(f.NumTopics, "topic"),
+			render.Count(f.NumPosts, "post"),
+			render.Truncate(render.Rel(f.LastPostDate), 12),
+			f.Name,
+		}
 	}
+	fmt.Print(table.Render(table.Options{
+		Headers: []string{"ID", "Status", "Topics", "Posts", "Last post", "Forum"},
+		Widths:  table.Widths([]table.ColumnSpec{table.Fixed(9), table.Fixed(9), table.Fixed(11), table.Fixed(11), table.Fixed(12), table.Flex(34)}, table.TerminalWidth()),
+		Rows:    rows,
+	}))
+	fmt.Print(render.Hint("schooltools discussion forum <forumId> --course %s", courseID))
 	return nil
 }
 
@@ -872,22 +988,36 @@ func runDisForum(forumID string) error {
 		return err
 	}
 	if disJSON {
-		b, _ := json.MarshalIndent(items, "", "  ")
-		fmt.Println(string(b))
-		return nil
+		return render.PrintJSON(render.NewList(items))
 	}
 	if len(items) == 0 {
-		fmt.Println("No topics found in this forum.")
+		fmt.Print(render.Empty("No topics in this forum."))
 		return nil
 	}
-	fmt.Printf("%d topic%s\n", len(items), plural(len(items)))
-	for _, t := range items {
-		pin := ""
-		if t.IsPinned {
-			pin = "[pinned] "
+	fmt.Print(render.Title("Topics · forum " + forumID))
+	rows := make([][]string, len(items))
+	for i, t := range items {
+		status := render.Muted("open")
+		switch {
+		case t.IsLocked:
+			status = render.Bad("locked")
+		case t.IsPinned:
+			status = render.Accent("pinned")
 		}
-		fmt.Printf("  %d\t%s%s\n", t.Id, pin, truncate(t.Name, 80))
+		rows[i] = []string{
+			strconv.Itoa(t.Id),
+			status,
+			render.Count(t.NumPosts, "post"),
+			render.Truncate(render.Rel(t.LastPostDate), 12),
+			t.Name,
+		}
 	}
+	fmt.Print(table.Render(table.Options{
+		Headers: []string{"ID", "Status", "Posts", "Last post", "Topic"},
+		Widths:  table.Widths([]table.ColumnSpec{table.Fixed(9), table.Fixed(10), table.Fixed(11), table.Fixed(12), table.Flex(38)}, table.TerminalWidth()),
+		Rows:    rows,
+	}))
+	fmt.Print(render.Hint("schooltools discussion post <topicId> --course %s", courseID))
 	return nil
 }
 
@@ -906,13 +1036,113 @@ func runDisPost(topicID string) error {
 		ua.D2LBase, dupdata.D2LVersion(), courseID, topicID)
 	var out json.RawMessage
 	if err := dupdata.FetchJSON(raw, ens.Jar, &out); err != nil {
-		// Try the alternate per-topic form.
 		raw2 := fmt.Sprintf("%s/d2l/api/le/%s/%s/discussions/topics/%s/posts/?pageSize=20&pageNumber=1",
 			ua.D2LBase, dupdata.D2LVersion(), courseID, topicID)
 		if err2 := dupdata.FetchJSON(raw2, ens.Jar, &out); err2 != nil {
 			return err
 		}
 	}
-	fmt.Println(string(out))
+	if disJSON {
+		fmt.Println(string(out))
+		return nil
+	}
+	posts, ok := decodeDiscussionPosts(out)
+	if !ok {
+		fmt.Println(string(out))
+		return nil
+	}
+	if len(posts) == 0 {
+		fmt.Print(render.Empty("No posts in this topic."))
+		return nil
+	}
+	fmt.Print(render.Title("Posts · topic " + topicID))
+	for _, p := range posts {
+		fmt.Print(renderPost(p))
+	}
 	return nil
+}
+
+type DiscussionAuthor struct {
+	UserId      json.Number `json:"UserId"`
+	DisplayName string      `json:"DisplayName"`
+	Name        string      `json:"Name"`
+}
+
+func (a *DiscussionAuthor) Label() string {
+	if a == nil {
+		return ""
+	}
+	if a.DisplayName != "" {
+		return a.DisplayName
+	}
+	return a.Name
+}
+
+type DiscussionPost struct {
+	Id             json.Number       `json:"Id"`
+	ParentId       json.Number       `json:"ParentId"`
+	ThreadId       json.Number       `json:"ThreadId"`
+	Subject        string            `json:"Subject"`
+	Message        RichText          `json:"Message"`
+	PostingDate    string            `json:"PostingDate"`
+	LastEditedDate string            `json:"LastEditedDate"`
+	IsRead         bool              `json:"IsRead"`
+	NumReplies     int               `json:"NumReplies"`
+	Depth          int               `json:"Depth"`
+	Author         *DiscussionAuthor `json:"Author"`
+}
+
+func decodeDiscussionPosts(raw json.RawMessage) ([]DiscussionPost, bool) {
+	trimmed := strings.TrimLeft(string(raw), " \t\r\n")
+	if strings.HasPrefix(trimmed, "[") {
+		var items []DiscussionPost
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return nil, false
+		}
+		return items, true
+	}
+	var page struct {
+		Items   []DiscussionPost `json:"Items"`
+		Objects []DiscussionPost `json:"Objects"`
+	}
+	if err := json.Unmarshal(raw, &page); err != nil {
+		return nil, false
+	}
+	if page.Items != nil {
+		return page.Items, true
+	}
+	return page.Objects, true
+}
+
+func renderPost(p DiscussionPost) string {
+	if strings.TrimSpace(p.Subject) == "" && p.Message.Plain() == "" {
+		raw, _ := json.MarshalIndent(p, "", "  ")
+		return string(raw) + "\n"
+	}
+	var b strings.Builder
+	indent := strings.Repeat("  ", p.Depth)
+	author := p.Author.Label()
+	head := p.Subject
+	if head == "" {
+		head = "(no subject)"
+	}
+	meta := render.When(p.PostingDate)
+	if author != "" {
+		meta += "  ·  " + author
+	}
+	if p.NumReplies > 0 {
+		meta += "  ·  " + render.Count(p.NumReplies, "reply")
+	}
+	if !p.IsRead {
+		meta += "  ·  " + render.Accent("unread")
+	}
+	b.WriteString(indent + render.Accent(head) + "\n")
+	b.WriteString(indent + render.Muted(meta) + "\n")
+	if body := p.Message.Plain(); body != "" {
+		for _, line := range strings.Split(render.Wrap(body, render.Width()-len(indent)-4), "\n") {
+			b.WriteString(indent + "    " + line + "\n")
+		}
+	}
+	b.WriteString("\n")
+	return b.String()
 }

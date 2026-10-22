@@ -14,6 +14,7 @@ import (
 
 	"github.com/aarav/schooltools/internal/content"
 	"github.com/aarav/schooltools/internal/httpclient"
+	"github.com/aarav/schooltools/internal/render"
 	"github.com/aarav/schooltools/internal/session"
 	"github.com/aarav/schooltools/internal/ua"
 	"github.com/aarav/schooltools/internal/urlutil"
@@ -111,12 +112,7 @@ func runDownloadForCourse(courseID string, topicID int) error {
 	}
 
 	if downloadJSON {
-		out, mErr := json.MarshalIndent(topic, "", "  ")
-		if mErr != nil {
-			return mErr
-		}
-		fmt.Println(string(out))
-		return nil
+		return render.PrintJSON(topic)
 	}
 
 	if !topic.IsFile() {
@@ -163,6 +159,7 @@ func writeTopicMetadata(courseID string, t content.Topic) error {
 		return err
 	}
 	if exists && downloadNoOverwrite {
+		fmt.Print(render.Note("%s already exists — pass --name to pick a new filename", path))
 		return fmt.Errorf("refusing to overwrite existing file: %s", path)
 	}
 
@@ -176,17 +173,55 @@ func writeTopicMetadata(courseID string, t content.Topic) error {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 
-	switch {
-	case t.IsLink():
-		fmt.Printf("Topic %d is a Link; saved metadata to %s\n", t.TopicId, path)
-		if u := t.FileURL(); u != "" {
-			fmt.Printf("Link URL: %s\n", u)
-		}
-	default:
-		fmt.Printf("Topic %d (type=%q) has no document body to download; saved metadata to %s\n",
-			t.TopicId, t.TypeIdentifier, path)
+	fmt.Print(metadataResultKV(courseID, t, path))
+	if !t.IsLink() {
+		fmt.Print(render.Note("topic %d (type %q) has no document body to download; saved its metadata instead", t.TopicId, t.TypeIdentifier))
 	}
+	fmt.Print(render.Hint("schooltools content get %d --course %s", t.TopicId, courseID))
 	return nil
+}
+
+func metadataResultKV(courseID string, t content.Topic, path string) string {
+	rows := []render.Row{
+		{Key: "Saved", Value: path},
+		{Key: "Course", Value: courseID},
+		{Key: "Topic", Value: fmt.Sprintf("%d  ·  %s", t.TopicId, strings.TrimSpace(t.Title))},
+		{Key: "Type", Value: topicTypeLabel(t)},
+	}
+	if t.Url != nil && *t.Url != "" {
+		rows = append(rows, render.Row{Key: "URL", Value: *t.Url})
+	}
+	return render.KV(rows...)
+}
+
+func downloadResultKV(courseID string, t content.Topic, path, resolvedURL string, size int64) string {
+	rows := []render.Row{
+		{Key: "Saved", Value: path},
+		{Key: "Size", Value: render.HumanBytes(size)},
+		{Key: "Course", Value: courseID},
+		{Key: "Topic", Value: fmt.Sprintf("%d  ·  %s", t.TopicId, strings.TrimSpace(t.Title))},
+	}
+	if u, err := url.Parse(resolvedURL); err == nil && u.Path != "" {
+		rows = append(rows, render.Row{Key: "Source", Value: u.Path})
+	}
+	return render.KV(rows...)
+}
+
+func topicTypeLabel(t content.Topic) string {
+	if t.TypeIdentifier != "" {
+		return t.TypeIdentifier
+	}
+	switch t.TopicType {
+	case 1:
+		return "File"
+	case 2:
+		return "Link"
+	case 3:
+		return "Content link"
+	case 0:
+		return "—"
+	}
+	return fmt.Sprintf("Other (type %d)", t.TopicType)
 }
 
 func fetchAndSaveFile(jar *cookiejar.Jar, courseID string, t content.Topic, fileURL string) error {
@@ -230,6 +265,7 @@ func fetchAndSaveFile(jar *cookiejar.Jar, courseID string, t content.Topic, file
 		return err
 	}
 	if exists && downloadNoOverwrite {
+		fmt.Print(render.Note("%s already exists — pass --name to pick a new filename", path))
 		return fmt.Errorf("refusing to overwrite existing file: %s", path)
 	}
 	if exists {
@@ -241,12 +277,8 @@ func fetchAndSaveFile(jar *cookiejar.Jar, courseID string, t content.Topic, file
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 
-	fmt.Printf("Downloaded: %s (%s)\n", path, humanBytes(int64(len(body))))
-	if u, perr := url.Parse(resolved); perr == nil {
-		fmt.Printf("  course:   %s\n", courseID)
-		fmt.Printf("  topic:    %d — %s\n", t.TopicId, strings.TrimSpace(t.Title))
-		fmt.Printf("  source:   %s\n", u.Path)
-	}
+	fmt.Print(downloadResultKV(courseID, t, path, resolved, int64(len(body))))
+	fmt.Print(render.Hint("schooltools content get %d --course %s", t.TopicId, courseID))
 	return nil
 }
 

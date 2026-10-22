@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"os"
@@ -18,6 +19,8 @@ import (
 
 	"github.com/aarav/schooltools/internal/archive"
 	"github.com/aarav/schooltools/internal/content"
+	"github.com/aarav/schooltools/internal/httpclient"
+	"github.com/aarav/schooltools/internal/render"
 	"github.com/aarav/schooltools/internal/session"
 	"github.com/aarav/schooltools/internal/table"
 	"github.com/aarav/schooltools/internal/tree"
@@ -131,8 +134,7 @@ func runContentList(courseID string) error {
 			return fmt.Errorf("session expired (landed on login page); run 'schooltools login' again")
 		}
 		if isTimeoutErr(err) {
-			fmt.Fprintf(os.Stderr, "note: TOC fetch did not complete in %s; re-run with `schooltools content --course %s --archive` to read from the on-disk archive.\n",
-				contentTimeout, courseID)
+			fmt.Fprint(os.Stderr, render.Note("TOC fetch did not complete in %s; re-run with `schooltools content --course %s --archive` to read from the on-disk archive.", contentTimeout, courseID))
 		}
 		return err
 	}
@@ -148,23 +150,21 @@ func runContentList(courseID string) error {
 		return fmt.Errorf("--tree and --json are mutually exclusive")
 	}
 	if contentJSON {
-		out := map[string]any{
+		list := render.NewList(flatRows)
+		return render.PrintJSON(map[string]any{
 			"courseId": courseID,
-			"count":    len(flatRows),
-			"items":    flatRows,
-		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		fmt.Println(string(b))
-		return nil
+			"count":    list.Count,
+			"items":    list.Items,
+		})
 	}
 
 	treeRows := applyTreePrefixes(flatRows, toc.Modules)
 
 	if contentTree {
-		printTree(toc.Modules, treeRows, contentDepth)
+		printTree(courseID, toc.Modules, treeRows, contentDepth)
 		return nil
 	}
-	printHuman(treeRows)
+	printHuman(courseID, treeRows)
 	return nil
 }
 
@@ -181,7 +181,7 @@ func runContentGet(courseID string, topicID int) error {
 	if err != nil {
 		return err
 	}
-	t, err := content.FetchTopic(courseID, topicID, ens.Jar)
+	t, doc, err := fetchTopicDoc(ens.Jar, courseID, topicID)
 	if err != nil {
 		if isLoginError(err) {
 			_ = session.Clear()
@@ -190,13 +190,105 @@ func runContentGet(courseID string, topicID int) error {
 		return fmt.Errorf("fetch topic metadata: %w", err)
 	}
 	if contentJSON {
-		out, _ := json.MarshalIndent(t, "", "  ")
-		fmt.Println(string(out))
-		return nil
+		return render.PrintJSON(doc)
 	}
-	out, _ := json.MarshalIndent(t, "", "  ")
-	fmt.Println(string(out))
+	fmt.Print(topicReport(courseID, t, doc))
 	return nil
+}
+
+func fetchTopicDoc(jar *cookiejar.Jar, courseID string, topicID int) (content.Topic, map[string]any, error) {
+	res, err := httpclient.FollowRedirects(content.TopicURL(courseID, topicID), jar, httpclient.FetchOptions{
+		Headers: map[string]string{"Accept": "application/json"},
+	})
+	if err != nil {
+		return content.Topic{}, nil, err
+	}
+	if res.StatusCode != http.StatusOK {
+		_ = res.Body.Close()
+		return content.Topic{}, nil, fmt.Errorf("D2L API returned %d %s for %s", res.StatusCode, res.Status, res.Request.URL)
+	}
+	body, err := httpclient.BodyBytes(res)
+	if err != nil {
+		return content.Topic{}, nil, err
+	}
+	var t content.Topic
+	if err := json.Unmarshal(body, &t); err != nil {
+		return content.Topic{}, nil, err
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return content.Topic{}, nil, err
+	}
+	return t, doc, nil
+}
+
+func topicReport(courseID string, t content.Topic, doc map[string]any) string {
+	var b strings.Builder
+	title := strings.TrimSpace(t.Title)
+	if title == "" {
+		title = fmt.Sprintf("Topic %d", t.TopicId)
+	}
+	b.WriteString(render.Title(title))
+
+	rows := []render.Row{
+		{Key: "ID", Value: strconv.Itoa(t.TopicId)},
+		{Key: "Type", Value: topicTypeLabel(t)},
+		{Key: "Start", Value: render.DateTime(docString(doc, "StartDate"))},
+		{Key: "End", Value: render.DateTime(docString(doc, "EndDate"))},
+		{Key: "Updated", Value: relOrDash(t.LastModifiedDate)},
+		{Key: "URL", Value: topicURLValue(t)},
+		{Key: "Hidden", Value: render.StatusWord(yesNo(t.IsHidden))},
+		{Key: "Locked", Value: render.StatusWord(yesNo(t.IsLocked))},
+		{Key: "Broken", Value: render.StatusWord(yesNo(t.IsBroken))},
+	}
+	if t.FileName != "" {
+		rows = append(rows, render.Row{Key: "File", Value: t.FileName})
+	}
+	b.WriteString(render.KV(rows...))
+
+	b.WriteString(render.Section("Next"))
+	switch {
+	case t.IsFile():
+		b.WriteString(render.Hint("schooltools download --course %s %d", courseID, t.TopicId))
+	case t.IsLink():
+		if u := topicURLValue(t); u != "—" {
+			b.WriteString(render.Hint("%s", u))
+		} else {
+			b.WriteString(render.Empty("No URL recorded for this link."))
+		}
+	default:
+		b.WriteString(render.Empty("Nothing to download for this topic type."))
+	}
+	return b.String()
+}
+
+func topicURLValue(t content.Topic) string {
+	if t.Url == nil || *t.Url == "" {
+		return "—"
+	}
+	return *t.Url
+}
+
+func docString(doc map[string]any, key string) string {
+	if doc == nil {
+		return ""
+	}
+	s, _ := doc[key].(string)
+	return s
+}
+
+func relOrDash(iso string) string {
+	if r := render.Rel(iso); r != "" {
+		return r
+	}
+	return "—"
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
 }
 
 // depthFilter keeps only rows with Depth <= max.
@@ -256,21 +348,14 @@ func applyTreePrefixes(flatRows []content.FlatRow, modules []content.TocModule) 
 	return out
 }
 
-func printTree(modules []content.TocModule, rows []content.FlatRow, depth int) {
+func printTree(courseID string, modules []content.TocModule, rows []content.FlatRow, depth int) {
 	if len(modules) == 0 {
-		fmt.Println("No content found for this course.")
+		fmt.Print(render.Title(fmt.Sprintf("Course content · %s", courseID)))
+		fmt.Print(render.Empty("No content found for this course."))
 		return
 	}
-	modulesN, topicsN := 0, 0
-	for _, r := range rows {
-		if r.Kind == "MODULE" {
-			modulesN++
-		} else {
-			topicsN++
-		}
-	}
-	fmt.Printf("%d items — %d module%s, %d topic%s\n",
-		len(rows), modulesN, plural(modulesN), topicsN, plural(topicsN))
+	modulesN, topicsN := countKinds(rows)
+	fmt.Print(render.Title(fmt.Sprintf("Course content · %s", courseID)))
 
 	pruned := modules
 	if depth > 0 {
@@ -303,8 +388,27 @@ func printTree(modules []content.TocModule, rows []content.FlatRow, depth int) {
 	})
 	fmt.Print(out)
 	if depth > 0 {
-		fmt.Printf("\n(limited to depth %d)\n", depth)
+		fmt.Print(render.Note("limited to depth %d", depth))
 	}
+	fmt.Print(tocCountSummary(modulesN, topicsN))
+}
+
+func countKinds(rows []content.FlatRow) (modules, topics int) {
+	for _, r := range rows {
+		if r.Kind == "MODULE" {
+			modules++
+		} else {
+			topics++
+		}
+	}
+	return modules, topics
+}
+
+func tocCountSummary(modules, topics int) string {
+	return render.KV(
+		render.Row{Key: "Modules", Value: render.Count(modules, "module")},
+		render.Row{Key: "Topics", Value: render.Count(topics, "topic")},
+	)
 }
 
 // pruneModulesByDepth returns modules trimmed so no descendant is below
@@ -341,40 +445,44 @@ func pruneModulesByDepth(modules []content.TocModule, max int) []content.TocModu
 // 2 = Link, 1 = File (default when the type identifier is missing).
 func topicTypeNumber(t content.TocTopic) int { return t.TopicType }
 
-func printHuman(rows []content.FlatRow) {
+func printHuman(courseID string, rows []content.FlatRow) {
+	fmt.Print(render.Title(fmt.Sprintf("Course content · %s", courseID)))
 	if len(rows) == 0 {
-		fmt.Println("No content found for this course.")
+		fmt.Print(render.Empty("No content found for this course."))
 		return
 	}
-	modules, topics := 0, 0
-	for _, r := range rows {
-		if r.Kind == "MODULE" {
-			modules++
-		} else {
-			topics++
-		}
-	}
-	fmt.Printf("%d items — %d module%s, %d topic%s\n",
-		len(rows), modules, plural(modules), topics, plural(topics))
+	modules, topics := countKinds(rows)
+	widths := contentTableWidths()
+	out := table.Render(table.Options{
+		Headers: []string{"ID", "Kind", "Type", "Last Updated", "Flags", "Title"},
+		Widths:  widths,
+		Rows:    contentTableRows(rows, widths),
+	})
+	fmt.Print(out)
+	fmt.Print(tocCountSummary(modules, topics))
+}
 
+func contentTableWidths() []int {
+	return table.Widths([]table.ColumnSpec{table.Fixed(8), table.Fixed(10), table.Fixed(12), table.Fixed(22), table.Fixed(22), table.Flex(24)}, table.TerminalWidth())
+}
+
+func contentTableRows(rows []content.FlatRow, widths []int) [][]string {
+	titleW := 24
+	if len(widths) > 5 {
+		titleW = widths[5] - 2
+	}
 	tableRows := make([][]string, len(rows))
 	for i, r := range rows {
-		flags := flagsFor(r)
 		tableRows[i] = []string{
 			fmt.Sprintf("%d", r.Id),
 			kindLabel(r.Kind),
 			r.Type,
 			formatContentDate(r.LastModified),
-			flags,
-			r.Title,
+			flagsFor(r),
+			render.Truncate(r.Title, titleW),
 		}
 	}
-	out := table.Render(table.Options{
-		Headers: []string{"ID", "Kind", "Type", "Last Updated", "Flags", "Title"},
-		Widths:  table.Widths([]table.ColumnSpec{table.Fixed(8), table.Fixed(10), table.Fixed(12), table.Fixed(22), table.Fixed(22), table.Flex(24)}, table.TerminalWidth()),
-		Rows:    tableRows,
-	})
-	fmt.Print(out)
+	return tableRows
 }
 
 func kindLabel(k string) string {
@@ -413,13 +521,10 @@ func stringsJoinComma(s []string) string {
 }
 
 func formatContentDate(iso string) string {
-	if iso == "" {
-		return "—"
+	if r := render.Rel(iso); r != "" {
+		return r
 	}
-	if len(iso) >= 16 {
-		return "[" + iso[:16] + "]"
-	}
-	return "[" + iso + "]"
+	return "—"
 }
 
 // runContentListFromArchive renders a TOC table from the on-disk
@@ -462,27 +567,6 @@ func runContentListFromArchive(courseID string) error {
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Id < rows[j].Id })
 
-	// For the table view, mirror `printHuman`: "ID", "Kind", "Type",
-	// "Last Updated", "Flags", "Title". Since the archive doesn't store
-	// the module/topic tree shape, we render a flat list — kind is
-	// always "Topic" here, and Flags shows "[N saved]" when there are
-	// multiple versions.
-	tableRows := make([][]string, len(rows))
-	for i, r := range rows {
-		flags := "—"
-		if r.Versions > 1 {
-			flags = fmt.Sprintf("[%d versions]", r.Versions)
-		}
-		tableRows[i] = []string{
-			fmt.Sprintf("%d", r.Id),
-			"Topic",
-			r.Type,
-			formatContentDate(r.Modified),
-			flags,
-			r.Title,
-		}
-	}
-
 	if contentJSON {
 		items := make([]map[string]any, len(rows))
 		for i, r := range rows {
@@ -499,39 +583,68 @@ func runContentListFromArchive(courseID string) error {
 				"courseCode":   idx.Code,
 			}
 		}
-		out := map[string]any{
+		list := render.NewList(items)
+		return render.PrintJSON(map[string]any{
 			"courseId":   courseID,
 			"source":     "archive",
-			"count":      len(rows),
+			"count":      list.Count,
 			"courseName": idx.Name,
 			"courseCode": idx.Code,
 			"indexedAt":  idx.UpdatedAt.UTC().Format(time.RFC3339),
-			"items":      items,
-		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		fmt.Println(string(b))
-		return nil
+			"items":      list.Items,
+		})
 	}
 
+	fmt.Print(render.Title(fmt.Sprintf("Archived content · %s", courseID)))
 	if len(rows) == 0 {
-		fmt.Printf("No archived topics for course %s.\n", courseID)
+		fmt.Print(render.Empty(fmt.Sprintf("No archived topics for course %s.", courseID)))
 		return nil
 	}
-	fmt.Printf("%d archived topic%s in course %s (course=%q, code=%q, index updated %s)\n",
-		len(rows), plural(len(rows)), courseID, idx.Name, idx.Code,
-		idx.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"))
+	widths := contentTableWidths()
+	tableRows := make([][]string, len(rows))
+	for i, r := range rows {
+		flags := "—"
+		if r.Versions > 1 {
+			flags = fmt.Sprintf("[%d versions]", r.Versions)
+		}
+		tableRows[i] = []string{
+			fmt.Sprintf("%d", r.Id),
+			"Topic",
+			r.Type,
+			formatContentDate(r.Modified),
+			flags,
+			render.Truncate(r.Title, widths[5]-2),
+		}
+	}
 	out := table.Render(table.Options{
 		Headers: []string{"ID", "Kind", "Type", "Last Updated", "Flags", "Title"},
-		Widths:  table.Widths([]table.ColumnSpec{table.Fixed(8), table.Fixed(10), table.Fixed(12), table.Fixed(22), table.Fixed(22), table.Flex(24)}, table.TerminalWidth()),
+		Widths:  widths,
 		Rows:    tableRows,
 	})
 	fmt.Print(out)
+	fmt.Print(render.KV(
+		render.Row{Key: "Topics", Value: render.Count(len(rows), "topic")},
+		render.Row{Key: "Course", Value: archiveCourseLabel(idx, courseID)},
+		render.Row{Key: "Indexed", Value: render.When(idx.UpdatedAt.UTC().Format(time.RFC3339))},
+	))
 	return nil
 }
 
-// runContentGetFromArchive reads a single archived topic's metadata JSON
-// (the blob content) and prints it the same way as the live `content
-// get` does — pretty-printed by default, unindented with --json.
+func archiveCourseLabel(idx *archive.CourseIndex, courseID string) string {
+	name := strings.TrimSpace(idx.Name)
+	code := strings.TrimSpace(idx.Code)
+	switch {
+	case name != "" && code != "":
+		return fmt.Sprintf("%s  ·  %s", name, code)
+	case name != "":
+		return name
+	case code != "":
+		return code
+	default:
+		return courseID
+	}
+}
+
 func runContentGetFromArchive(courseID string, topicID int) error {
 	idx, err := archive.LoadCourseIndex(contentArchiveDir, courseID)
 	if err != nil {
@@ -552,25 +665,19 @@ func runContentGetFromArchive(courseID string, topicID int) error {
 		return fmt.Errorf("load blob %s: %w", t.Current, err)
 	}
 
-	// Re-decode so we can pretty-print, same behaviour as the live
-	// `content get`.
-	var parsed map[string]any
-	if err := json.Unmarshal(blob, &parsed); err != nil {
-		// blob wasn't JSON; print bytes verbatim.
-		if contentJSON {
-			fmt.Println(string(blob))
-		} else {
-			fmt.Println(string(blob))
-		}
+	var doc map[string]any
+	if err := json.Unmarshal(blob, &doc); err != nil {
+		fmt.Println(string(blob))
 		return nil
+	}
+	var topic content.Topic
+	if err := json.Unmarshal(blob, &topic); err != nil {
+		topic = content.Topic{TopicId: topicID}
 	}
 	if contentJSON {
-		b, _ := json.Marshal(parsed)
-		fmt.Println(string(b))
-		return nil
+		return render.PrintJSON(doc)
 	}
-	b, _ := json.MarshalIndent(parsed, "", "  ")
-	fmt.Println(string(b))
+	fmt.Print(topicReport(courseID, topic, doc))
 	return nil
 }
 

@@ -1,15 +1,14 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/aarav/schooltools/internal/authlog"
 	"github.com/aarav/schooltools/internal/login"
+	"github.com/aarav/schooltools/internal/render"
 	"github.com/aarav/schooltools/internal/session"
 )
 
@@ -37,15 +36,22 @@ var tokenCmd = &cobra.Command{
 			return err
 		}
 		if tok == nil {
-			fmt.Printf("No captured token at %s. Run `schooltools login` to capture one.\n", session.TokenPath())
+			fmt.Print(render.Empty(fmt.Sprintf("No captured token at %s.", session.TokenPath())))
+			fmt.Print(render.Hint("schooltools login   captures a Brightspace token on the next login"))
 			return nil
 		}
 		if tokenJSON {
-			b, _ := json.MarshalIndent(tok, "", "  ")
-			fmt.Println(string(b))
-			return nil
+			return render.PrintJSON(redactedToken(*tok))
 		}
-		printTokenRecord(*tok, time.Now())
+		fmt.Print(render.Title("Token"))
+		fmt.Print(render.KV(render.Row{Key: "File", Value: session.TokenPath()}))
+		fmt.Print(tokenKV(*tok, time.Now()))
+		fmt.Print(render.Section("Next"))
+		if tok.IsExpired(time.Now()) {
+			fmt.Print(render.Hint("schooltools token --refresh   mints a fresh token from the saved cookies"))
+		} else {
+			fmt.Print(render.Hint("schooltools session   for cookie and SAML expiry"))
+		}
 		return nil
 	},
 }
@@ -71,46 +77,53 @@ func runTokenRefresh() error {
 		"tenant_id":  rec.TenantID,
 	})
 	if tokenJSON {
-		b, _ := json.MarshalIndent(rec, "", "  ")
-		fmt.Println(string(b))
-		return nil
+		return render.PrintJSON(redactedToken(*rec))
 	}
-	if !rec.ExpiresAt.IsZero() {
-		_, _ = fmt.Fprintf(os.Stdout, "Refreshed Brightspace token (valid until %s, user %s, tenant %s) -> %s\n",
-			rec.ExpiresAt.Format(time.RFC3339), rec.UserID, rec.TenantID, session.TokenPath())
-	} else {
-		_, _ = fmt.Fprintf(os.Stdout, "Refreshed Brightspace token -> %s\n", session.TokenPath())
+	fmt.Print(render.Title("Token refreshed"))
+	fmt.Print(render.KV(render.Row{Key: "File", Value: session.TokenPath()}))
+	fmt.Print(tokenKV(*rec, time.Now()))
+	if rec.RefreshToken == "" {
+		fmt.Print(render.Note("no refresh token was minted; the next `--refresh` still needs the saved session to be alive"))
 	}
-	printTokenRecord(*rec, time.Now())
 	return nil
 }
 
 func init() {
-	tokenCmd.Flags().BoolVar(&tokenJSON, "json", false, "Emit the raw token record JSON")
+	tokenCmd.Flags().BoolVar(&tokenJSON, "json", false, "Emit the token record as JSON (access and refresh tokens redacted)")
 	tokenCmd.Flags().StringVar(&tokenPath, "path", "", "Override the token file path (default: ~/.config/schooltools/token.json)")
 	tokenCmd.Flags().BoolVar(&tokenRefresh, "refresh", false, "Mint a fresh Brightspace token using the saved session cookies")
 	rootCmd.AddCommand(tokenCmd)
 }
 
-func printTokenRecord(tok session.TokenRecord, now time.Time) {
-	fmt.Printf("Token file: %s\n", session.TokenPath())
+func tokenKV(tok session.TokenRecord, now time.Time) string {
+	rows := []render.Row{}
 	if tok.TenantID != "" || tok.UserID != "" {
-		fmt.Printf("  tenant/user: %s / %s\n", tok.TenantID, tok.UserID)
+		rows = append(rows, render.Row{Key: "Tenant/user", Value: fmt.Sprintf("%s / %s", tok.TenantID, tok.UserID)})
 	}
 	if tok.Issuer != "" {
-		fmt.Printf("  issuer:      %s\n", tok.Issuer)
+		rows = append(rows, render.Row{Key: "Issuer", Value: tok.Issuer})
 	}
 	if tok.Scope != "" {
-		fmt.Printf("  scope:       %s\n", tok.Scope)
+		rows = append(rows, render.Row{Key: "Scope", Value: tok.Scope})
 	}
 	if !tok.IssuedAt.IsZero() {
-		fmt.Printf("  issued:      %s\n", tok.IssuedAt.UTC().Format(time.RFC3339))
+		rows = append(rows, render.Row{Key: "Issued", Value: render.When(isoOf(tok.IssuedAt))})
 	}
-	if tok.IsExpired(now) {
-		_, _ = fmt.Fprintf(os.Stdout, "  EXPIRED at %s (re-login to refresh)\n",
-			tok.ExpiresAt.UTC().Format(time.RFC3339))
-	} else if !tok.ExpiresAt.IsZero() {
-		_, _ = fmt.Fprintf(os.Stdout, "  expires:     %s   (in %s)\n",
-			tok.ExpiresAt.UTC().Format(time.RFC3339), humanize(tok.Remaining(now)))
+	switch {
+	case tok.ExpiresAt.IsZero():
+		rows = append(rows, render.Row{Key: "Expires", Value: render.Muted("no expiry recorded")})
+	case tok.IsExpired(now):
+		rows = append(rows, render.Row{Key: "Expires", Value: expiryPhrase(tok.ExpiresAt, now) + "  ·  re-login to refresh"})
+	default:
+		rows = append(rows, render.Row{Key: "Expires", Value: expiryPhrase(tok.ExpiresAt, now)})
 	}
+	return render.KV(rows...)
+}
+
+func redactedToken(tok session.TokenRecord) session.TokenRecord {
+	tok.AccessToken = "[redacted]"
+	if tok.RefreshToken != "" {
+		tok.RefreshToken = "[redacted]"
+	}
+	return tok
 }

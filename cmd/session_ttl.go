@@ -2,13 +2,13 @@ package cmd
 
 import (
 	"fmt"
-	"os"
-	"text/tabwriter"
-	"time"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/aarav/schooltools/internal/authstats"
+	"github.com/aarav/schooltools/internal/render"
+	"github.com/aarav/schooltools/internal/table"
 )
 
 var sessionTtlCmd = &cobra.Command{
@@ -24,7 +24,8 @@ var sessionTtlCmd = &cobra.Command{
 			return err
 		}
 		ttl := authstats.TTL(events)
-		return printSessionTTL(ttl)
+		printSessionTTL(ttl)
+		return nil
 	},
 }
 
@@ -32,38 +33,60 @@ func init() {
 	sessionCmd.AddCommand(sessionTtlCmd)
 }
 
-func printSessionTTL(ttl authstats.TTLResult) error {
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	defer func() { _ = tw.Flush() }()
+func printSessionTTL(ttl authstats.TTLResult) {
+	var b strings.Builder
+	b.WriteString(render.Title("Session lifetime"))
 
 	if ttl.Samples == 0 {
-		_, _ = fmt.Fprintln(tw, "Need at least 2 successful logins in auth.log to compute a gap.")
-		_, _ = fmt.Fprintln(tw, "Run `schooltools login` at least twice (with the session actually dying in between)")
-		_, _ = fmt.Fprintln(tw, "to start collecting samples.")
-		return nil
+		b.WriteString(render.Empty("Need at least 2 successful logins in auth.log to compute a gap."))
+		b.WriteString(render.Bullets(
+			"Each gap between two successive `login.success` events bounds how long the saved session lived.",
+			"Run `schooltools login` at least twice, with the session actually dying in between, to start collecting samples.",
+		))
+		b.WriteString(render.Hint("schooltools login"))
+		fmt.Print(b.String())
+		return
 	}
 
-	_, _ = fmt.Fprintf(tw, "Generated:\t%s\n", ttl.GeneratedAt.UTC().Format(time.RFC3339))
-	_, _ = fmt.Fprintf(tw, "Samples:\t%d (login.success → login.success gaps)\n", ttl.Samples)
-	_, _ = fmt.Fprintf(tw, "Shortest:\t%s\n", humanGap(ttl.Min))
-	_, _ = fmt.Fprintf(tw, "Longest:\t%s\n", humanGap(ttl.Max))
-	_, _ = fmt.Fprintf(tw, "Mean:\t%s\n", humanGap(ttl.Mean))
-	_, _ = fmt.Fprintf(tw, "Median:\t%s\n", humanGap(ttl.Median))
-	_, _ = fmt.Fprintf(tw, "Latest gap:\t%s\n", humanGap(ttl.LatestGap))
-	_, _ = fmt.Fprintf(tw, "Total uptime:\t%s\n", humanGap(ttl.HoursOfUptime))
-	_, _ = fmt.Fprintln(tw, "")
-	_, _ = fmt.Fprintln(tw, "Recent login timestamps:")
-	for i := len(ttl.LoginTimestamps) - 1; i >= 0 && i >= len(ttl.LoginTimestamps)-5; i-- {
-		if i < 0 {
-			break
-		}
-		_, _ = fmt.Fprintf(tw, "  %s\n", ttl.LoginTimestamps[i].UTC().Format(time.RFC3339))
+	b.WriteString(render.Section("Summary"))
+	b.WriteString(render.KV(
+		render.Row{Key: "Generated", Value: whenOf(ttl.GeneratedAt)},
+		render.Row{Key: "Samples", Value: render.Count(ttl.Samples, "gap") + "  ·  login.success → login.success"},
+		render.Row{Key: "Shortest", Value: render.Duration(ttl.Min)},
+		render.Row{Key: "Longest", Value: render.Duration(ttl.Max)},
+		render.Row{Key: "Mean", Value: render.Duration(ttl.Mean)},
+		render.Row{Key: "Median", Value: render.Duration(ttl.Median)},
+		render.Row{Key: "Latest gap", Value: render.Duration(ttl.LatestGap)},
+		render.Row{Key: "Total uptime", Value: render.Duration(ttl.HoursOfUptime)},
+	))
+
+	b.WriteString(render.Section("Recent logins"))
+	start := len(ttl.LoginTimestamps) - 5
+	if start < 0 {
+		start = 0
 	}
-	_, _ = fmt.Fprintln(tw, "")
-	_, _ = fmt.Fprintln(tw, "Interpretation:")
-	_, _ = fmt.Fprintln(tw, "  - The shortest gap is the tightest lower bound on session lifetime.")
-	_, _ = fmt.Fprintln(tw, "  - The longest gap is an upper bound (the session may have died earlier).")
-	_, _ = fmt.Fprintln(tw, "  - The actual lifetime is somewhere between the shortest and the longest.")
-	_, _ = fmt.Fprintln(tw, "  - Pick a heartbeat interval comfortably below the median to avoid forced re-logins.")
-	return nil
+	rows := make([][]string, 0, 5)
+	for i := len(ttl.LoginTimestamps) - 1; i >= start; i-- {
+		gap := "—"
+		if i > 0 && ttl.LoginTimestamps[i].After(ttl.LoginTimestamps[i-1]) {
+			gap = render.Duration(ttl.LoginTimestamps[i].Sub(ttl.LoginTimestamps[i-1]))
+		}
+		rows = append(rows, []string{whenOf(ttl.LoginTimestamps[i]), gap})
+	}
+	b.WriteString(table.Render(table.Options{
+		Headers: []string{"Logged in", "Gap before"},
+		Widths:  table.Widths([]table.ColumnSpec{table.Fixed(38), table.Flex(16)}, table.TerminalWidth()),
+		Rows:    rows,
+	}))
+
+	b.WriteString(render.Section("Interpretation"))
+	b.WriteString(render.Bullets(
+		"The shortest gap is the tightest lower bound on session lifetime.",
+		"The longest gap is an upper bound (the session may have died earlier).",
+		"The actual lifetime is somewhere between the shortest and the longest.",
+		"Pick a heartbeat interval comfortably below the median to avoid forced re-logins.",
+	))
+	b.WriteString(render.Section("Next"))
+	b.WriteString(render.Hint("schooltools session   to inspect the current session"))
+	fmt.Print(b.String())
 }

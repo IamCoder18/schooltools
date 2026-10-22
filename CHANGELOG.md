@@ -21,7 +21,97 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   stall a pass. Permanent failures (404, 400) and expired sessions are
   still not retried.
 
+### Changed
+- **Output overhaul across every command.** Human-readable output is now a
+  rendered report instead of raw JSON dumps and tab-separated rows. A new
+  `internal/render` package provides the shared language: `Title` (bold
+  heading + rule), `Section`, aligned `KV` key/value panels, width-aware
+  `Wrap`, `Bullets`, `Empty`, `Hint` (`→ …`) and `Note`. Lists become real
+  `internal/table` tables; detail views become key/value panels.
+  Colour is applied only on a TTY and honours `NO_COLOR`; all wrapping is
+  terminal-width aware.
+- **Times are human and local.** Dates render as `Mon, Jan 2 2006, 3:04 PM`
+  with a relative suffix (`2 days ago`, `in 3 days`), and datetimes are
+  converted to the local timezone. Date-only values such as `2026-10-02`
+  are *not* shifted, so an award issued on Oct 2 still reads Oct 2.
+  Availability windows render as `Jan 2 → Feb 3  ·  closes in 3 days`.
+- **`get` commands are proactive.** `assignment get`, `quiz get` and
+  `course get` fetch their related records and render one report:
+  - `assignment get <folderId>` shows the folder, its availability window,
+    instructions and attachments, the **full rubric** (criterion names,
+    levels, per-criterion max), your submissions with their files and the
+    exact `download` command for each, and the released feedback with the
+    rubric mapped onto criterion names — e.g. `13 / 14 points → Level 4`.
+  - `quiz get <quizId>` shows the quiz plus your attempts, attempts used
+    against the allowance, best score, time limit and grade-calculation
+    method.
+  - `course get <orgUnitId>` shows the term, dates, access, what needs
+    your attention (`updates/myUpdates` counts), at-a-glance counts for
+    assignments / quizzes / grades / news, and the latest announcements.
+  Related lookups run concurrently (bounded worker pool) and degrade
+  quietly when D2L refuses. Pass `--no-related` on `assignment get`,
+  `quiz get`, `quiz list`, `course get` and `course list` to fetch only
+  the primary record.
+- **`--json` emits envelopes.** Every list-shaped `--json` output is now
+  `{"count": N, "items": [...]}` rather than a bare top-level array, per
+  `AGENTS.md`. This closes known-issues #9 and #11. Aggregated `get`
+  output is a single object with named sub-objects (`folder`,
+  `submissions`, `feedback`, `quiz`, `attempts`, `news`, `related`).
+  **This is a breaking change for scripts that read a bare array.**
+- `course list` gained an `Activity` column summarising what needs you per
+  course (quizzes to try, feedback to read, unread posts) from a single
+  `updates/myUpdates` call.
+- `whoami` reads `/d2l/api/lp/<lp>/users/whoami` instead of scraping
+  display-name HTML out of `/d2l/home`, and reports identifier, unique
+  name, user id and profile id.
+- `news` lists show posted date, relative age and pinned/draft status in a
+  table; `news get` renders the announcement body as wrapped prose plus
+  attachment download commands, instead of dumping the raw JSON record.
+- `grade`, `discussion`, `calendar`, `due`, `overdue`, `update`, `feed`
+  and `award` all render tables or panels with real column headers.
+  `calendar` groups events by day with a `Mon, Oct 26  ·  in 5 days`
+  heading per group and handles both all-day and timed events.
+- `quiz list` shows status, due, attempts allowed, time limit and best
+  score per quiz.
+- Empty states are a dim sentence (`No feedback released yet.`) rather
+  than a bare `0 items` count line, and reports end with a `→ schooltools
+  …` hint for the most likely next command.
+
 ### Fixed
+- `assignment`, `quiz` and `course` decoded D2L responses with structs
+  that did not match the Valence contract, so most fields silently read as
+  zero values. The folder record's `Description`/`StartDate`/`EndDate`
+  were renamed to `CustomInstructions` and `Availability.{Start,End}Date`,
+  the entire `Assessment.Rubrics` block was missing, and the quiz record's
+  `TimeLimit`/`AttemptsAllowed` did not match `SubmissionTimeLimit` and
+  `AttemptsAllowed.{IsUnlimited,NumberOfAttemptsAllowed}`. Quiz attempts
+  used `Id`/`StartDate`/`EndDate`/`MaxScore`, none of which exist on
+  `Quiz.QuizAttemptData` (`AttemptId`/`Started`/`Completed`, no max).
+  All three now decode the real envelopes.
+- `assignment submissions` decoded `mysubmissions/` as a flat submission
+  array; the route actually returns `EntityDropbox` records carrying the
+  submission **files** (`FileId`, `FileName`, `Size`), the submission
+  comment, and any published feedback together. Submissions now list their
+  files with the exact `assignment submission … download …` command for
+  each.
+- `assignment feedback` rendered rubric criteria as bare numeric ids
+  (`criterion 1141663: 1`) even though the folder record carries the full
+  rubric. It now resolves criterion names, level names and per-criterion
+  maximums, and computes the overall score out of the real total.
+- `assignment get` returned the raw folder JSON whether or not `--json`
+  was passed. `course get`, `quiz get`, `quiz attempt`, `content get`,
+  `news get`, `grade get` and `award get` had the same problem — `--json`
+  was a no-op for output shape. All now render a report by default and
+  only emit JSON under `--json`.
+- HTML-to-text conversion left non-breaking spaces (`&#160;` / `&nbsp;`)
+  in the rendered body, which broke word wrapping in announcement bodies
+  and rubric feedback.
+- `quiz attempts` reported a bare `403` as a hard error; the message now
+  explains that students cannot read a quiz's attempts and points at
+  `grade` instead. `quiz get` likewise suggests `grade` when the attempts
+  lookup is refused, rather than hinting at a command that will also fail.
+- `course get` failed outright for students because CBE returns 403 for
+  `/courses/<id>`; it now falls back to the enrollment record and says so.
 - `assignment feedback` crashed with
   `cannot unmarshal object into ... Feedback.Feedback of type string` on
   any actually-graded folder: D2L returns `Feedback` as a `{Text, Html}`
@@ -56,6 +146,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `archive update` leaked a connection per TOC fetch and per course-list
   page: the response body was decoded but never closed. Retries made those
   leaks multiply, so they are closed now.
+
+### Security
+- Test fixtures are synthetic. They assert the field mapping D2L → CLI,
+  not any particular string, so they carry no real student names, user
+  ids, assignment titles or teacher feedback. Keep it that way when
+  adding new fixtures.
+- `token --json` printed the raw OAuth **access token** to stdout. That
+  violates `SECURITY.md` ("the Bearer token … never goes to stdout"), and
+  made the command unsafe to use in a pipeline, a script log, or a shared
+  terminal scrollback. `token --json` now emits `"[redacted]"` for both
+  `access_token` and `refresh_token` and keeps every other field. The
+  human-readable `token` output was already redacted and is unchanged. If
+  you need the raw token for tooling, read `~/.config/schooltools/token.json`
+  directly rather than parsing command output.
 
 ## [0.3.0] - 2026-10-15
 

@@ -63,7 +63,7 @@ Read [`README.md`](./README.md) before making changes. Read
 | HTTP transport / retries | `internal/httpclient/`, `internal/retry/` |
 | The on-disk archive store | `internal/archive/` |
 | The JSONL auth log | `internal/authlog/` |
-| Terminal UI helpers | `internal/ui/`, `internal/table/`, `internal/tree/` |
+| Terminal UI helpers | `internal/ui/`, `internal/render/`, `internal/table/`, `internal/tree/` |
 | systemd units | `internal/systemd/` and the `.tmpl` files under `internal/systemd/units/` |
 | The CLI version string | `cmd/root.go` (`rootCmd.Version`) |
 | The CHANGELOG | `CHANGELOG.md` (Keep a Changelog format) |

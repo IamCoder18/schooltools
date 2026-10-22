@@ -1,14 +1,12 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"text/tabwriter"
-	"time"
+	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/aarav/schooltools/internal/render"
 	"github.com/aarav/schooltools/internal/systemd"
 )
 
@@ -90,7 +88,7 @@ func init() {
 // `schooltools` process writes status to stderr only for errors).
 func printSystemdStatus(action string, st systemd.Status) error {
 	if systemdJSONOutput {
-		out, err := json.MarshalIndent(map[string]any{
+		return render.PrintJSON(map[string]any{
 			"action":         action,
 			"installed":      st.Installed,
 			"enabled":        st.Enabled,
@@ -105,80 +103,79 @@ func printSystemdStatus(action string, st systemd.Status) error {
 			"user_dir":       st.UserDir,
 			"warnings":       st.Warnings,
 			"list_timer_raw": st.TimerOutput,
-		}, "", "  ")
-		if err != nil {
-			return err
-		}
-		_, _ = fmt.Fprintln(os.Stdout, string(out))
-		return nil
+		})
 	}
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	defer func() { _ = tw.Flush() }()
-
-	writeWarnings := func() {
-		if len(st.Warnings) == 0 {
-			return
-		}
-		_, _ = fmt.Fprintln(tw, "")
-		_, _ = fmt.Fprintln(tw, "Warnings:")
-		for _, w := range st.Warnings {
-			_, _ = fmt.Fprintln(tw, "  ! "+w)
-		}
-	}
+	var b strings.Builder
+	b.WriteString(render.Title("systemd · " + action))
 
 	switch action {
 	case "installed":
-		_, _ = fmt.Fprintf(tw, "Installed:\t%s\n", st.UnitPath)
-		_, _ = fmt.Fprintf(tw, "Enabled:\t%v\n", st.Enabled)
-		_, _ = fmt.Fprintf(tw, "Active:\t%v\n", st.Active)
-		if st.Next != "" {
-			_, _ = fmt.Fprintf(tw, "Next run:\t%s (in %s)\n", st.Next, st.Left)
-		}
-		if st.Last != "" {
-			if st.Passed != "" {
-				_, _ = fmt.Fprintf(tw, "Last run:\t%s (%s)\n", st.Last, st.Passed)
-			} else {
-				_, _ = fmt.Fprintf(tw, "Last run:\t%s\n", st.Last)
-			}
-		}
-		writeWarnings()
-		_, _ = fmt.Fprintln(tw, "")
-		_, _ = fmt.Fprintln(tw, "Run `schooltools systemd status` any time to inspect the timer.")
-		_, _ = fmt.Fprintln(tw, "Inspect logs with: journalctl --user -u schooltools-archive.service")
+		b.WriteString(render.Section("Unit"))
+		b.WriteString(systemdKV(st))
+		b.WriteString(warningNotes(st.Warnings))
+		b.WriteString(render.Section("Next"))
+		b.WriteString(render.Hint("schooltools systemd status   to inspect the timer"))
+		b.WriteString(render.Hint("journalctl --user -u schooltools-archive.service   for run logs"))
 	case "uninstalled":
-		_, _ = fmt.Fprintln(tw, "Uninstalled. Unit files removed from "+st.UserDir+".")
-		_, _ = fmt.Fprintln(tw, "If a run is currently in-flight it will finish; subsequent timer ticks are disabled.")
+		b.WriteString(render.Section("Unit"))
+		b.WriteString(render.KV(
+			render.Row{Key: "Removed", Value: st.UserDir},
+		))
+		b.WriteString(render.Bullets("A run currently in flight will finish; subsequent timer ticks are disabled."))
+		b.WriteString(warningNotes(st.Warnings))
+		b.WriteString(render.Section("Next"))
+		b.WriteString(render.Hint("schooltools systemd install   to set the timer back up"))
 	case "status":
 		if !st.Installed {
-			_, _ = fmt.Fprintln(tw, "Not installed. Run `schooltools systemd install` to set up the timer.")
+			b.WriteString(render.Empty("Not installed."))
+			b.WriteString(render.Hint("schooltools systemd install   to set up the timer"))
+			fmt.Print(b.String())
 			return nil
 		}
-		_, _ = fmt.Fprintf(tw, "Unit path:\t%s\n", st.UnitPath)
-		_, _ = fmt.Fprintf(tw, "Enabled:\t%v\n", st.Enabled)
-		_, _ = fmt.Fprintf(tw, "Active:\t%v\n", st.Active)
-		if st.Next != "" {
-			_, _ = fmt.Fprintf(tw, "Next run:\t%s (in %s)\n", st.Next, st.Left)
-		}
-		if st.Last != "" {
-			if st.Passed != "" {
-				_, _ = fmt.Fprintf(tw, "Last run:\t%s (%s)\n", st.Last, st.Passed)
-			} else {
-				_, _ = fmt.Fprintf(tw, "Last run:\t%s\n", st.Last)
-			}
-		}
+		b.WriteString(render.Section("Unit"))
+		b.WriteString(systemdKV(st))
 		if len(st.TimerOutput) > 0 {
-			_, _ = fmt.Fprintln(tw, "")
-			_, _ = fmt.Fprintln(tw, "Raw `systemctl --user list-timers` output:")
+			b.WriteString(render.Section("list-timers"))
 			for _, line := range st.TimerOutput {
-				_, _ = fmt.Fprintln(tw, "  "+line)
+				b.WriteString("  " + render.Muted(line) + "\n")
 			}
 		}
-		writeWarnings()
+		b.WriteString(warningNotes(st.Warnings))
+		b.WriteString(render.Section("Next"))
+		b.WriteString(render.Hint("journalctl --user -u schooltools-archive.service   for run logs"))
 	}
+	fmt.Print(b.String())
 	return nil
 }
 
-// ensure time is used (kept here so go vet doesn't complain if all imports
-// become unused in some future refactor).
-var _ = time.Now
+func systemdKV(st systemd.Status) string {
+	rows := []render.Row{
+		{Key: "Unit", Value: st.UnitPath},
+		{Key: "Enabled", Value: render.StatusWord(boolStr(st.Enabled))},
+		{Key: "Active", Value: render.StatusWord(boolStr(st.Active))},
+	}
+	if st.Next != "" {
+		rows = append(rows, render.Row{Key: "Next run", Value: st.Next + "  ·  in " + st.Left})
+	}
+	if st.Last != "" {
+		v := st.Last
+		if st.Passed != "" {
+			v += "  ·  " + st.Passed
+		}
+		rows = append(rows, render.Row{Key: "Last run", Value: v})
+	}
+	return render.KV(rows...)
+}
+
+func warningNotes(warnings []string) string {
+	if len(warnings) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(render.Section("Warnings"))
+	for _, w := range warnings {
+		b.WriteString(render.Note("%s", w))
+	}
+	return b.String()
+}

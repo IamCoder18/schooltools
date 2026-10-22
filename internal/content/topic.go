@@ -17,17 +17,43 @@ import (
 // body is preserved verbatim by the archive package, so unrecognised fields
 // are not lost.
 type Topic struct {
-	TopicId         int     `json:"TopicId"`
-	Title           string  `json:"Title"`
-	TypeIdentifier  string  `json:"TypeIdentifier"`
-	Url             *string `json:"Url"`
-	FileName        string  `json:"FileName"`
-	LastModifiedDate string `json:"LastModifiedDate"`
-	IsHidden        bool    `json:"IsHidden"`
-	IsLocked        bool    `json:"IsLocked"`
-	IsBroken        bool    `json:"IsBroken"`
-	ActivityId      string  `json:"ActivityId"`
-	TopicType       int     `json:"TopicType"`
+	TopicId          int     `json:"TopicId"`
+	Title            string  `json:"Title"`
+	TypeIdentifier   string  `json:"TypeIdentifier"`
+	Url              *string `json:"Url"`
+	FileName         string  `json:"FileName"`
+	LastModifiedDate string  `json:"LastModifiedDate"`
+	IsHidden         bool    `json:"IsHidden"`
+	IsLocked         bool    `json:"IsLocked"`
+	IsBroken         bool    `json:"IsBroken"`
+	ActivityId       string  `json:"ActivityId"`
+	TopicType        int     `json:"TopicType"`
+}
+
+func (t *Topic) UnmarshalJSON(b []byte) error {
+	type alias Topic
+	var a alias
+	if err := json.Unmarshal(b, &a); err != nil {
+		return err
+	}
+	*t = Topic(a)
+	if t.TopicId == 0 {
+		var alt struct {
+			Id int `json:"Id"`
+		}
+		if err := json.Unmarshal(b, &alt); err == nil {
+			t.TopicId = alt.Id
+		}
+	}
+	if t.TopicType == 0 {
+		var alt struct {
+			Type int `json:"Type"`
+		}
+		if err := json.Unmarshal(b, &alt); err == nil {
+			t.TopicType = alt.Type
+		}
+	}
+	return nil
 }
 
 // IsFile reports whether the topic's underlying document is a downloadable

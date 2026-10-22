@@ -5,6 +5,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -12,7 +13,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/aarav/schooltools/internal/dupdata"
+	"github.com/aarav/schooltools/internal/render"
 	"github.com/aarav/schooltools/internal/session"
+	"github.com/aarav/schooltools/internal/table"
 	"github.com/aarav/schooltools/internal/ua"
 )
 
@@ -38,9 +41,12 @@ type CalendarEvent struct {
 	IsAllDayEvent        bool        `json:"IsAllDayEvent"`
 	StartDateTime        string      `json:"StartDateTime"`
 	EndDateTime          string      `json:"EndDateTime"`
+	StartDay             string      `json:"StartDay"`
+	EndDay               string      `json:"EndDay"`
 	EventType            int         `json:"EventType"`
 	LocationName         string      `json:"LocationName"`
 	OrgUnitName          string      `json:"OrgUnitName"`
+	OrgUnitCode          string      `json:"OrgUnitCode"`
 }
 
 func init() {
@@ -110,23 +116,171 @@ func runCalendar() error {
 		return err
 	}
 	if calJSON {
-		b, _ := json.MarshalIndent(items, "", "  ")
-		fmt.Println(string(b))
-		return nil
+		return render.PrintJSON(render.NewList(items))
 	}
 	if len(items) == 0 {
-		fmt.Println("No calendar events in this window.")
+		fmt.Print(render.Empty("No calendar events in this window."))
 		return nil
 	}
-	fmt.Printf("%d calendar event%s\n", len(items), plural(len(items)))
-	for _, e := range items {
-		when := e.StartDateTime
-		if len(when) > 16 {
-			when = when[:16]
-		}
-		fmt.Printf("  %s\torg=%d\ttype=%d\t%s\t%s\n", e.CalendarEventId.String(), e.OrgUnitId, e.EventType, when, truncate(e.Title, 60))
-	}
+	fmt.Print(calRender(items, time.Now()))
 	return nil
+}
+
+type calDay struct {
+	Heading string
+	Events  []CalendarEvent
+}
+
+func calEventStart(e CalendarEvent) string {
+	if e.IsAllDayEvent && e.StartDay != "" {
+		return e.StartDay
+	}
+	return e.StartDateTime
+}
+
+func calCourseLabel(e CalendarEvent) string {
+	switch {
+	case e.OrgUnitName != "":
+		return e.OrgUnitName
+	case e.OrgUnitCode != "":
+		return e.OrgUnitCode
+	default:
+		return fmt.Sprintf("org %d", e.OrgUnitId)
+	}
+}
+
+func calEventTypeLabel(t int) string {
+	switch t {
+	case 1:
+		return "assignment"
+	case 2:
+		return "quiz"
+	case 3:
+		return "discussion"
+	case 4:
+		return "module"
+	case 5:
+		return "custom"
+	default:
+		return ""
+	}
+}
+
+func calEventTime(e CalendarEvent) string {
+	if e.IsAllDayEvent {
+		return "all day"
+	}
+	start, hasStart := render.Parse(e.StartDateTime)
+	end, hasEnd := render.Parse(e.EndDateTime)
+	switch {
+	case !hasStart:
+		return "—"
+	case hasEnd && start.Local().Format("2006-01-02") != end.Local().Format("2006-01-02"):
+		return render.DateTime(e.StartDateTime) + " – " + render.DateTime(e.EndDateTime)
+	case hasEnd:
+		return render.Time(e.StartDateTime) + " – " + render.Time(e.EndDateTime)
+	default:
+		return render.Time(e.StartDateTime)
+	}
+}
+
+func calDayHeading(key string, now time.Time) string {
+	day, ok := render.Parse(key)
+	if !ok {
+		return "Undated"
+	}
+	label := day.Format("Mon, Jan 2")
+	ny, nm, nd := now.Date()
+	dy, dm, dd := day.Date()
+	base := time.Date(ny, nm, nd, 0, 0, 0, 0, time.UTC)
+	target := time.Date(dy, dm, dd, 0, 0, 0, 0, time.UTC)
+	switch n := int(target.Sub(base).Hours() / 24); {
+	case n == 0:
+		return label + "  ·  today"
+	case n == 1:
+		return label + "  ·  tomorrow"
+	case n == -1:
+		return label + "  ·  yesterday"
+	case n > 0:
+		return label + "  ·  in " + render.Count(n, "day")
+	default:
+		return label + "  ·  " + render.Count(-n, "day") + " ago"
+	}
+}
+
+func calDayKey(e CalendarEvent) string {
+	s := strings.TrimSpace(calEventStart(e))
+	t, ok := render.Parse(s)
+	if !ok {
+		return ""
+	}
+	if len(s) <= 10 {
+		return t.Format("2006-01-02")
+	}
+	return t.Local().Format("2006-01-02")
+}
+
+func calGroupDays(items []CalendarEvent, now time.Time) []calDay {
+	sorted := append([]CalendarEvent(nil), items...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		si, sj := calEventStart(sorted[i]), calEventStart(sorted[j])
+		ti, oi := render.Parse(si)
+		tj, oj := render.Parse(sj)
+		if oi && oj && !ti.Equal(tj) {
+			return ti.Before(tj)
+		}
+		return si < sj
+	})
+	var days []calDay
+	byKey := map[string]int{}
+	for _, e := range sorted {
+		key := calDayKey(e)
+		if key == "" {
+			key = "Undated"
+		}
+		if i, seen := byKey[key]; seen {
+			days[i].Events = append(days[i].Events, e)
+			continue
+		}
+		byKey[key] = len(days)
+		days = append(days, calDay{Heading: calDayHeading(key, now), Events: []CalendarEvent{e}})
+	}
+	return days
+}
+
+func calEventBlock(e CalendarEvent) string {
+	w := render.Width() - 4
+	if w < 24 {
+		w = 24
+	}
+	var b strings.Builder
+	b.WriteString("  " + render.Truncate(strings.TrimSpace(e.Title), w) + "\n")
+	meta := calCourseLabel(e) + "  ·  " + calEventTime(e)
+	if t := calEventTypeLabel(e.EventType); t != "" {
+		meta += "  ·  " + t
+	}
+	if loc := strings.TrimSpace(e.LocationName); loc != "" {
+		meta += "  ·  " + loc
+	}
+	b.WriteString("    " + render.Muted(render.Truncate(meta, w)) + "\n")
+	if d := strings.TrimSpace(htmlToText(e.Description)); d != "" {
+		for _, line := range strings.Split(render.Wrap(d, w-2), "\n") {
+			b.WriteString("    " + render.Muted(line) + "\n")
+		}
+	}
+	return b.String()
+}
+
+func calRender(items []CalendarEvent, now time.Time) string {
+	var b strings.Builder
+	b.WriteString(render.Title("Calendar"))
+	for _, d := range calGroupDays(items, now) {
+		b.WriteString(render.Section(d.Heading))
+		for _, e := range d.Events {
+			b.WriteString(calEventBlock(e))
+		}
+	}
+	return b.String()
 }
 
 func calSession() (session.EnsureResult, error) {
@@ -151,18 +305,18 @@ var (
 )
 
 type DueItem struct {
-	Id              string `json:"Id"`
-	Name            string `json:"Name"`
-	ToolId          int    `json:"ToolId"`
-	ToolName        string `json:"ToolName"`
-	OrgUnitId       int    `json:"OrgUnitId"`
-	OrgUnitName     string `json:"OrgUnitName"`
-	StartDate       string `json:"StartDate"`
-	EndDate         string `json:"EndDate"`
-	DueDate         string `json:"DueDate"`
-	IsCompleted     bool   `json:"IsCompleted"`
-	IsOverdue       bool   `json:"IsOverdue"`
-	CompletionType  int    `json:"CompletionType"`
+	Id             string `json:"Id"`
+	Name           string `json:"Name"`
+	ToolId         int    `json:"ToolId"`
+	ToolName       string `json:"ToolName"`
+	OrgUnitId      int    `json:"OrgUnitId"`
+	OrgUnitName    string `json:"OrgUnitName"`
+	StartDate      string `json:"StartDate"`
+	EndDate        string `json:"EndDate"`
+	DueDate        string `json:"DueDate"`
+	IsCompleted    bool   `json:"IsCompleted"`
+	IsOverdue      bool   `json:"IsOverdue"`
+	CompletionType int    `json:"CompletionType"`
 }
 
 func init() {
@@ -225,26 +379,14 @@ func runDue() error {
 		return err
 	}
 	if dueJSON {
-		b, _ := json.MarshalIndent(items, "", "  ")
-		fmt.Println(string(b))
-		return nil
+		return render.PrintJSON(render.NewList(items))
 	}
 	if len(items) == 0 {
-		fmt.Println("No due items in this window.")
+		fmt.Print(render.Empty("No due items in this window."))
 		return nil
 	}
-	fmt.Printf("%d due item%s\n", len(items), plural(len(items)))
-	for _, d := range items {
-		when := d.DueDate
-		if len(when) > 16 {
-			when = when[:16]
-		}
-		org := d.OrgUnitName
-		if org == "" {
-			org = strconv.Itoa(d.OrgUnitId)
-		}
-		fmt.Printf("  %s\t%s\t%s\t%s\n", d.Id, org, when, truncate(d.Name, 60))
-	}
+	fmt.Print(render.Title("Due items"))
+	fmt.Print(dueItemsTable(items, false))
 	return nil
 }
 
@@ -268,27 +410,51 @@ func runOverdue() error {
 		return err
 	}
 	if dueJSON {
-		b, _ := json.MarshalIndent(items, "", "  ")
-		fmt.Println(string(b))
-		return nil
+		return render.PrintJSON(render.NewList(items))
 	}
 	if len(items) == 0 {
-		fmt.Println("No overdue items.")
+		fmt.Print(render.Empty("No overdue items."))
 		return nil
 	}
-	fmt.Printf("%d overdue item%s\n", len(items), plural(len(items)))
-	for _, d := range items {
-		when := d.DueDate
-		if len(when) > 16 {
-			when = when[:16]
-		}
-		org := d.OrgUnitName
-		if org == "" {
-			org = strconv.Itoa(d.OrgUnitId)
-		}
-		fmt.Printf("  %s\t%s\t%s\t%s\n", d.Id, org, when, truncate(d.Name, 60))
-	}
+	fmt.Print(render.Title("Overdue items"))
+	fmt.Print(dueItemsTable(items, true))
 	return nil
+}
+
+func dueCourseLabel(d DueItem) string {
+	if d.OrgUnitName != "" {
+		return d.OrgUnitName
+	}
+	return strconv.Itoa(d.OrgUnitId)
+}
+
+func dueCell(d DueItem) string {
+	return render.Countdown(d.DueDate) + "  ·  " + render.DateTime(d.DueDate)
+}
+
+func dueItemsTable(items []DueItem, overdue bool) string {
+	headers := []string{"Course", "Due"}
+	specs := []table.ColumnSpec{table.Fixed(24), table.Fixed(42)}
+	if overdue {
+		headers = append(headers, "Status")
+		specs = append(specs, table.Fixed(10))
+	}
+	headers = append(headers, "Title")
+	specs = append(specs, table.Flex(28))
+	rows := make([][]string, len(items))
+	for i, d := range items {
+		row := []string{render.Truncate(dueCourseLabel(d), 24), dueCell(d)}
+		if overdue {
+			row = append(row, render.StatusWord("overdue"))
+		}
+		row = append(row, render.Truncate(d.Name, 52))
+		rows[i] = row
+	}
+	return table.Render(table.Options{
+		Headers: headers,
+		Widths:  table.Widths(specs, table.TerminalWidth()),
+		Rows:    rows,
+	})
 }
 
 func dueSession() (session.EnsureResult, error) {
@@ -310,15 +476,15 @@ var (
 )
 
 type Update struct {
-	OrgUnitId               json.Number `json:"OrgUnitId"`
-	UserId                  json.Number `json:"UserId"`
-	UnreadDiscussions       int         `json:"UnreadDiscussions"`
-	UnapprovedDiscussions   int         `json:"UnapprovedDiscussions"`
-	UnreadAssignmentFeedback int        `json:"UnreadAssignmentFeedback"`
-	UnattemptedQuizzes      int         `json:"UnattemptedQuizzes"`
-	UnreadAssignmentSubmissions int      `json:"UnreadAssignmentSubmissions"`
-	UngradedQuizzes         int         `json:"UngradedQuizzes"`
-	PendingEnrollmentRequests int       `json:"PendingEnrollmentRequests"`
+	OrgUnitId                   json.Number `json:"OrgUnitId"`
+	UserId                      json.Number `json:"UserId"`
+	UnreadDiscussions           int         `json:"UnreadDiscussions"`
+	UnapprovedDiscussions       int         `json:"UnapprovedDiscussions"`
+	UnreadAssignmentFeedback    int         `json:"UnreadAssignmentFeedback"`
+	UnattemptedQuizzes          int         `json:"UnattemptedQuizzes"`
+	UnreadAssignmentSubmissions int         `json:"UnreadAssignmentSubmissions"`
+	UngradedQuizzes             int         `json:"UngradedQuizzes"`
+	PendingEnrollmentRequests   int         `json:"PendingEnrollmentRequests"`
 }
 
 func init() {
@@ -357,23 +523,87 @@ func runUpdate() error {
 		return err
 	}
 	if updJSON {
-		b, _ := json.MarshalIndent(items, "", "  ")
-		fmt.Println(string(b))
-		return nil
+		return render.PrintJSON(render.NewList(items))
 	}
 	if len(items) == 0 {
-		fmt.Println("No per-course update counts.")
+		fmt.Print(render.Empty("No per-course update counts."))
 		return nil
 	}
-	fmt.Printf("%d course%s with update counts\n", len(items), plural(len(items)))
+	var visible []Update
 	for _, u := range items {
-		total := u.UnreadDiscussions + u.UnapprovedDiscussions +
-			u.UnreadAssignmentFeedback + u.UnattemptedQuizzes +
-			u.UnreadAssignmentSubmissions + u.UngradedQuizzes
-		fmt.Printf("  %s\ttotal=%d\tquiz=%d unsubmitted, %d ungraded\tfeedback=%d unread\n",
-			u.OrgUnitId.String(), total, u.UnattemptedQuizzes, u.UngradedQuizzes, u.UnreadAssignmentFeedback)
+		if updateCounts(u).total() > 0 {
+			visible = append(visible, u)
+		}
 	}
+	if len(visible) == 0 {
+		fmt.Print(render.Empty("No updates in any course."))
+		return nil
+	}
+	fmt.Print(render.Title("Updates"))
+	rows := make([][]string, len(visible))
+	for i, u := range visible {
+		c := updateCounts(u)
+		rows[i] = []string{
+			u.OrgUnitId.String(),
+			strconv.Itoa(c.Discussions),
+			strconv.Itoa(c.Feedback),
+			strconv.Itoa(c.Quizzes),
+			strconv.Itoa(c.Submissions),
+			strconv.Itoa(c.Requests),
+			strconv.Itoa(c.total()),
+		}
+	}
+	fmt.Print(table.Render(table.Options{
+		Headers: []string{"Course", "Discussions", "Feedback", "Quizzes", "Submissions", "Requests", "Total"},
+		Widths:  table.Widths([]table.ColumnSpec{table.Fixed(10), table.Fixed(12), table.Fixed(10), table.Fixed(9), table.Fixed(12), table.Fixed(10), table.Fixed(8)}, table.TerminalWidth()),
+		Rows:    rows,
+	}))
+	if hidden := len(items) - len(visible); hidden > 0 {
+		fmt.Print(render.Empty(fmt.Sprintf("%s with no updates are not shown.", render.Count(hidden, "course"))))
+	}
+	fmt.Print(render.KV(render.Row{Key: "Totals", Value: updateTotalsLine(sumUpdates(items), len(visible))}))
 	return nil
+}
+
+type updateTotals struct {
+	Discussions int
+	Feedback    int
+	Quizzes     int
+	Submissions int
+	Requests    int
+}
+
+func (t updateTotals) total() int {
+	return t.Discussions + t.Feedback + t.Quizzes + t.Submissions + t.Requests
+}
+
+func updateCounts(u Update) updateTotals {
+	return updateTotals{
+		Discussions: u.UnreadDiscussions + u.UnapprovedDiscussions,
+		Feedback:    u.UnreadAssignmentFeedback,
+		Quizzes:     u.UnattemptedQuizzes + u.UngradedQuizzes,
+		Submissions: u.UnreadAssignmentSubmissions,
+		Requests:    u.PendingEnrollmentRequests,
+	}
+}
+
+func sumUpdates(items []Update) updateTotals {
+	var t updateTotals
+	for _, u := range items {
+		c := updateCounts(u)
+		t.Discussions += c.Discussions
+		t.Feedback += c.Feedback
+		t.Quizzes += c.Quizzes
+		t.Submissions += c.Submissions
+		t.Requests += c.Requests
+	}
+	return t
+}
+
+func updateTotalsLine(t updateTotals, courses int) string {
+	return fmt.Sprintf("%s across %s  ·  discussions %d  ·  feedback %d  ·  quizzes %d  ·  submissions %d  ·  requests %d",
+		render.Count(t.total(), "update"), render.Count(courses, "course"),
+		t.Discussions, t.Feedback, t.Quizzes, t.Submissions, t.Requests)
 }
 
 func updSession() (session.EnsureResult, error) {
@@ -432,24 +662,54 @@ func runFeed() error {
 		return err
 	}
 	if feedJSON {
-		b, _ := json.MarshalIndent(items, "", "  ")
-		fmt.Println(string(b))
-		return nil
+		return render.PrintJSON(render.NewList(items))
 	}
 	if len(items) == 0 {
-		fmt.Println("No activity feed entries in this window.")
+		fmt.Print(render.Empty("No activity feed entries in this window."))
 		return nil
 	}
-	fmt.Printf("%d feed item%s\n", len(items), plural(len(items)))
-	for _, e := range items {
-		title, _ := e["Title"].(string)
-		ts, _ := e["Timestamp"].(string)
-		if len(ts) > 16 {
-			ts = ts[:16]
+	fmt.Print(render.Title("Activity feed"))
+	rows := make([][]string, len(items))
+	for i, e := range items {
+		rows[i] = []string{
+			render.When(feedField(e, "Timestamp", "Date", "CreatedDate", "ModifiedDate")),
+			render.Truncate(feedField(e, "Title", "Name", "Subject"), 52),
+			render.Truncate(feedSource(e), 26),
 		}
-		fmt.Printf("  %s\t%s\n", ts, truncate(title, 80))
 	}
+	fmt.Print(table.Render(table.Options{
+		Headers: []string{"When", "Title", "Source"},
+		Widths:  table.Widths([]table.ColumnSpec{table.Fixed(46), table.Flex(30), table.Fixed(26)}, table.TerminalWidth()),
+		Rows:    rows,
+	}))
 	return nil
+}
+
+func feedField(e map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if s, ok := e[k].(string); ok {
+			if s = strings.TrimSpace(s); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+func feedSource(e map[string]any) string {
+	var parts []string
+	for _, k := range []string{"ToolName", "OrgUnitName"} {
+		if s := feedField(e, k); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, "  ·  ")
+	}
+	if s := feedField(e, "Source", "Type", "ActivityType"); s != "" {
+		return s
+	}
+	return "—"
 }
 
 func feedSession() (session.EnsureResult, error) {

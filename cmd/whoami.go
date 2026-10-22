@@ -1,26 +1,42 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"os"
 	"strings"
 
-	"github.com/PuerkitoBio/goquery"
 	"github.com/spf13/cobra"
 
 	"github.com/aarav/schooltools/internal/authlog"
 	"github.com/aarav/schooltools/internal/cookies"
+	"github.com/aarav/schooltools/internal/dupdata"
 	"github.com/aarav/schooltools/internal/env"
 	stderrors "github.com/aarav/schooltools/internal/errors"
 	"github.com/aarav/schooltools/internal/httpclient"
 	"github.com/aarav/schooltools/internal/login"
+	"github.com/aarav/schooltools/internal/render"
 	"github.com/aarav/schooltools/internal/session"
-	"github.com/aarav/schooltools/internal/table"
 	"github.com/aarav/schooltools/internal/ua"
 )
+
+type whoamiUser struct {
+	Identifier        string `json:"Identifier"`
+	FirstName         string `json:"FirstName"`
+	LastName          string `json:"LastName"`
+	Pronouns          string `json:"Pronouns"`
+	UniqueName        string `json:"UniqueName"`
+	ProfileIdentifier string `json:"ProfileIdentifier"`
+}
+
+func (u whoamiUser) displayName() string {
+	name := strings.TrimSpace(u.FirstName + " " + u.LastName)
+	if name == "" {
+		return "(unknown)"
+	}
+	return name
+}
 
 var whoamiCmd = &cobra.Command{
 	Use:   "whoami",
@@ -81,50 +97,54 @@ var whoamiCmd = &cobra.Command{
 				return err
 			}
 		}
+		landed := res.Request.URL.String()
+		_ = res.Body.Close()
 
-		html, err := httpclient.BodyString(res)
-		if err != nil {
-			return err
-		}
-		doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-		if err != nil {
-			return err
-		}
-		displayName := strings.TrimSpace(doc.Find("[data-username]").AttrOr("data-username", ""))
-		if displayName == "" {
-			displayName = strings.TrimSpace(doc.Find("a.d2l-imagelink[title]").First().AttrOr("title", ""))
-		}
-		if displayName == "" {
-			displayName = strings.TrimSpace(doc.Find(".d2l-navigation-link[title]").First().AttrOr("title", ""))
-		}
-		if displayName == "" {
-			displayName = strings.TrimSpace(doc.Find("title").First().Text())
-		}
-		if displayName == "" {
-			displayName = "(unknown)"
-		}
+		user, uerr := fetchWhoami(ens.Jar)
 
 		if asJSON {
 			out := map[string]any{
-				"status":  "logged_in",
-				"user":    displayName,
-				"landed":  res.Request.URL.String(),
+				"status":             "logged_in",
+				"user":               user.displayName(),
+				"landed":             landed,
+				"identifier":         user.Identifier,
+				"unique_name":        user.UniqueName,
+				"first_name":         user.FirstName,
+				"last_name":          user.LastName,
+				"pronouns":           user.Pronouns,
+				"profile_identifier": user.ProfileIdentifier,
 			}
-			b, _ := json.MarshalIndent(out, "", "  ")
-			fmt.Println(string(b))
-			return nil
+			return render.PrintJSON(out)
 		}
 
-		out := table.Render(table.Options{
-			Headers: []string{"Field", "Value"},
-			Widths:  table.Widths([]table.ColumnSpec{table.Fixed(14), table.Flex(32)}, table.TerminalWidth()),
-			Rows: [][]string{
-				{"Status", "✓ logged in"},
-				{"User", displayName},
-				{"Landed on", res.Request.URL.String()},
-			},
-		})
-		fmt.Print(out)
+		fmt.Print(render.Title(user.displayName()))
+		fmt.Print(render.Section("Identity"))
+		rows := []render.Row{
+			{Key: "Status", Value: render.OK("logged in")},
+			{Key: "Name", Value: user.displayName()},
+		}
+		if user.Pronouns != "" {
+			rows = append(rows, render.Row{Key: "Pronouns", Value: user.Pronouns})
+		}
+		if user.UniqueName != "" {
+			rows = append(rows, render.Row{Key: "Unique name", Value: user.UniqueName})
+		}
+		if user.Identifier != "" {
+			rows = append(rows, render.Row{Key: "User ID", Value: user.Identifier})
+		}
+		if user.ProfileIdentifier != "" {
+			rows = append(rows, render.Row{Key: "Profile ID", Value: user.ProfileIdentifier})
+		}
+		fmt.Print(render.KV(rows...))
+		if uerr != nil {
+			fmt.Print(render.Note("identity is incomplete: %s", uerr))
+		}
+		fmt.Print(render.Section("Session"))
+		fmt.Print(render.KV(
+			render.Row{Key: "Landed on", Value: landed},
+		))
+		fmt.Print(render.Section("Next"))
+		fmt.Print(render.Hint("schooltools session   for cookie, SAML, and token expiry"))
 		return nil
 	},
 }
@@ -145,6 +165,13 @@ func fetchHome(jar *cookiejar.Jar) (*http.Response, error) {
 		return res, fmt.Errorf("landed on %s", res.Request.URL.String())
 	}
 	return res, nil
+}
+
+func fetchWhoami(jar *cookiejar.Jar) (whoamiUser, error) {
+	var u whoamiUser
+	raw := fmt.Sprintf("%s/d2l/api/lp/%s/users/whoami", ua.D2LBase, dupdata.LPVersion())
+	err := dupdata.FetchJSON(raw, jar, &u)
+	return u, err
 }
 
 // loginFn is the dependency-injected login runner for session.EnsureSession.
@@ -191,6 +218,3 @@ func refreshAndLog(envFile string) bool {
 	_ = authlog.Log("reauth.success", map[string]any{})
 	return true
 }
-
-// suppress unused warnings while iterating.
-var _ = loginFn

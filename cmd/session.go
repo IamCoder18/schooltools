@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"fmt"
-	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/aarav/schooltools/internal/render"
 	"github.com/aarav/schooltools/internal/session"
+	"github.com/aarav/schooltools/internal/table"
 )
 
 var sessionCmd = &cobra.Command{
@@ -18,100 +20,108 @@ var sessionCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		printExpiry(ex)
-		printToken()
+		fmt.Print(sessionReport(ex))
 		return nil
 	},
 }
 
 func init() { rootCmd.AddCommand(sessionCmd) }
 
-func printExpiry(ex session.Expiry) {
-	_, _ = fmt.Fprintf(os.Stdout, "Session cookies (%d):\n", len(ex.PerCookie))
-	for _, c := range ex.PerCookie {
-		_, _ = fmt.Fprintf(os.Stdout, "  %-22s domain=%s\n", c.Name, c.Domain)
-		if c.IsSession {
-			_, _ = fmt.Fprintf(os.Stdout, "      session-only (no Expires; cleared when browser closes)\n")
-			continue
-		}
-		if c.IsExpired {
-			_, _ = fmt.Fprintf(os.Stdout, "      EXPIRED at %s\n", c.Expires.UTC().Format(time.RFC3339))
-			continue
-		}
-		_, _ = fmt.Fprintf(os.Stdout, "      expires %s   (in %s)\n",
-			c.Expires.UTC().Format(time.RFC3339), humanize(c.Remaining))
-	}
+func isoOf(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
+func whenOf(t time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
+	return render.When(isoOf(t))
+}
+
+func expiryPhrase(t time.Time, now time.Time) string {
+	if t.Before(now) {
+		return render.Bad("expired "+render.RelAt(t, now)) + "  ·  " + render.DateTime(isoOf(t))
+	}
+	return "expires " + render.RelAt(t, now) + "  ·  " + render.DateTime(isoOf(t))
+}
+
+func sessionReport(ex session.Expiry) string {
+	now := ex.Now
+	tok, tokErr := session.LoadToken()
+
+	var b strings.Builder
+	b.WriteString(render.Title("Session"))
+
+	b.WriteString(render.Section("Summary"))
+	rows := []render.Row{}
 	switch {
 	case ex.Soonest.IsZero() && !ex.HasSession:
-		_, _ = fmt.Fprintln(os.Stdout, "\nNo session cookies found. Run 'schooltools login'.")
+		rows = append(rows, render.Row{Key: "Expires", Value: render.Bad("no session cookies found")})
 	case ex.Soonest.IsZero():
-		_, _ = fmt.Fprintln(os.Stdout, "\nActual session expiry: (no Expires on any cookie; browser-session only)")
+		rows = append(rows, render.Row{Key: "Expires", Value: render.Muted("browser-session only (no Expires; cleared when the browser closes)")})
 	default:
-		_, _ = fmt.Fprintf(os.Stdout, "\nActual session expires: %s (in %s, driven by %s)\n",
-			ex.Soonest.UTC().Format(time.RFC3339), humanize(ex.Soonest.Sub(ex.Now)), ex.SoonestName)
+		rows = append(rows, render.Row{Key: "Expires", Value: expiryPhrase(ex.Soonest, now) + "  ·  driven by " + ex.SoonestName})
 	}
-
+	rows = append(rows, render.Row{Key: "Cookies", Value: render.Count(len(ex.PerCookie), "cookie")})
 	if ex.SAMLAvailable {
-		remaining := ex.SAMLNotAfter.Sub(ex.Now)
-		if remaining < 0 {
-			_, _ = fmt.Fprintf(os.Stdout, "SAML assertion: EXPIRED at %s (from saml-last.json)\n",
-				ex.SAMLNotAfter.UTC().Format(time.RFC3339))
-		} else {
-			_, _ = fmt.Fprintf(os.Stdout, "SAML assertion valid until: %s (in %s, from saml-last.json)\n",
-				ex.SAMLNotAfter.UTC().Format(time.RFC3339), humanize(remaining))
+		rows = append(rows, render.Row{Key: "SAML", Value: expiryPhrase(ex.SAMLNotAfter, now) + "  ·  from saml-last.json"})
+	} else {
+		rows = append(rows, render.Row{Key: "SAML", Value: render.Muted("none — captured on the next login")})
+	}
+	switch {
+	case tokErr != nil:
+		rows = append(rows, render.Row{Key: "Token", Value: render.Bad("error reading " + session.TokenPath())})
+	case tok == nil:
+		rows = append(rows, render.Row{Key: "Token", Value: render.Muted("none — captured on the next login")})
+	case tok.IsExpired(now):
+		rows = append(rows, render.Row{Key: "Token", Value: expiryPhrase(tok.ExpiresAt, now) + "  ·  re-login to refresh"})
+	default:
+		rows = append(rows, render.Row{Key: "Token", Value: expiryPhrase(tok.ExpiresAt, now)})
+	}
+	b.WriteString(render.KV(rows...))
+
+	b.WriteString(render.Section("Cookies"))
+	if len(ex.PerCookie) == 0 {
+		b.WriteString(render.Empty("No session cookies found."))
+	} else {
+		crows := make([][]string, 0, len(ex.PerCookie))
+		for _, c := range ex.PerCookie {
+			expires, status := "—", render.Muted("session-only")
+			if !c.IsSession {
+				expires = render.DateTime(isoOf(c.Expires))
+				if c.IsExpired {
+					status = render.Bad("expired") + "  ·  " + render.RelAt(c.Expires, now)
+				} else {
+					status = render.OK("valid") + "  ·  expires " + render.RelAt(c.Expires, now)
+				}
+			}
+			crows = append(crows, []string{c.Name, c.Domain, expires, status})
 		}
-	} else {
-		_, _ = fmt.Fprintln(os.Stdout, "SAML assertion: (no saml-last.json; will be captured on next login)")
+		b.WriteString(table.Render(table.Options{
+			Headers: []string{"Cookie", "Domain", "Expires", "Status"},
+			Widths:  table.Widths([]table.ColumnSpec{table.Fixed(24), table.Fixed(16), table.Fixed(24), table.Flex(20)}, table.TerminalWidth()),
+			Rows:    crows,
+		}))
 	}
-}
 
-// printToken shows the captured Brightspace OAuth token expiry and claims.
-// Reads token.json directly; the token is also exposed via the
-// `schooltools token show` command for scripting.
-func printToken() {
-	tok, err := session.LoadToken()
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stdout, "\nBrightspace token: error reading %s: %v\n", session.TokenPath(), err)
-		return
+	b.WriteString(render.Section("Brightspace token"))
+	switch {
+	case tokErr != nil:
+		b.WriteString(render.Empty("Could not read " + session.TokenPath() + "."))
+	case tok == nil:
+		b.WriteString(render.Empty("No captured token — it will be captured on the next login."))
+	default:
+		b.WriteString(tokenKV(*tok, now))
 	}
-	if tok == nil {
-		_, _ = fmt.Fprintln(os.Stdout, "\nBrightspace token: (none — will be captured on next login)")
-		return
-	}
-	_, _ = fmt.Fprintln(os.Stdout, "\nBrightspace token:")
-	if tok.TenantID != "" || tok.UserID != "" {
-		_, _ = fmt.Fprintf(os.Stdout, "  tenant/user: %s / %s\n", tok.TenantID, tok.UserID)
-	}
-	if tok.Issuer != "" {
-		_, _ = fmt.Fprintf(os.Stdout, "  issuer:      %s\n", tok.Issuer)
-	}
-	if tok.Scope != "" {
-		_, _ = fmt.Fprintf(os.Stdout, "  scope:       %s\n", tok.Scope)
-	}
-	if tok.IsExpired(time.Now()) {
-		_, _ = fmt.Fprintf(os.Stdout, "  EXPIRED at %s (re-login to refresh)\n",
-			tok.ExpiresAt.UTC().Format(time.RFC3339))
-	} else {
-		_, _ = fmt.Fprintf(os.Stdout, "  expires:     %s   (in %s)\n",
-			tok.ExpiresAt.UTC().Format(time.RFC3339), humanize(tok.Remaining(time.Now())))
-	}
-}
 
-func humanize(d time.Duration) string {
-	if d < 0 {
-		d = -d
+	b.WriteString(render.Section("Next"))
+	switch {
+	case ex.Soonest.IsZero() && !ex.HasSession:
+		b.WriteString(render.Hint("schooltools login   to start a fresh session"))
+	case tok != nil && tok.IsExpired(now) && tok.RefreshToken == "":
+		b.WriteString(render.Hint("schooltools login   to capture a fresh Brightspace token"))
+	case tok != nil && tok.IsExpired(now):
+		b.WriteString(render.Hint("schooltools token --refresh   mints a fresh token from the saved cookies"))
+	default:
+		b.WriteString(render.Hint("schooltools doctor   to probe session and network health"))
 	}
-	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	}
-	if d < time.Hour {
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	}
-	if d < 24*time.Hour {
-		return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
-	}
-	days := int(d / (24 * time.Hour))
-	hours := int(d/time.Hour) % 24
-	return fmt.Sprintf("%dd %dh", days, hours)
+	return b.String()
 }
