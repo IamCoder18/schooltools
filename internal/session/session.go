@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aarav/schooltools/internal/cookies"
-	"github.com/aarav/schooltools/internal/httpclient"
+	"github.com/IamCoder18/schooltools/internal/cookies"
+	"github.com/IamCoder18/schooltools/internal/httpclient"
 )
 
 var sessionCookieNames = regexp.MustCompile(`^(d2lSessionVal|d2lSecureSessionVal|d2l\.SESSIONID|d2l\.session|d2lSameSiteCanaryA|d2lSameSiteCanaryB)$`)

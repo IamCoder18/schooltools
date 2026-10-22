@@ -14,10 +14,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/aarav/schooltools/internal/archive"
-	"github.com/aarav/schooltools/internal/session"
-	"github.com/aarav/schooltools/internal/table"
-	"github.com/aarav/schooltools/internal/ui"
+	"github.com/IamCoder18/schooltools/internal/archive"
+	"github.com/IamCoder18/schooltools/internal/session"
+	"github.com/IamCoder18/schooltools/internal/table"
+	"github.com/IamCoder18/schooltools/internal/ui"
 )
 
 // tsvSanitize replaces tabs and newlines so a single field can never break

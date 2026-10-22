@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/aarav/schooltools/internal/errors"
+	"github.com/IamCoder18/schooltools/internal/errors"
 )
 
 var mfaInputNames = regexp.MustCompile(`(?i)^(Duo_Code|Duo_Session_Id|Otp_Code|OTPCode|verificationCode|passcode|otpCode|totp|code)$`)

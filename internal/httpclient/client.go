@@ -16,9 +16,9 @@ import (
 
 	"github.com/andybalholm/brotli"
 
-	"github.com/aarav/schooltools/internal/browser"
-	"github.com/aarav/schooltools/internal/cookies"
-	"github.com/aarav/schooltools/internal/ua"
+	"github.com/IamCoder18/schooltools/internal/browser"
+	"github.com/IamCoder18/schooltools/internal/cookies"
+	"github.com/IamCoder18/schooltools/internal/ua"
 	"golang.org/x/net/publicsuffix"
 )
 

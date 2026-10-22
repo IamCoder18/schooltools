@@ -3,7 +3,7 @@ package session
 import (
 	"time"
 
-	"github.com/aarav/schooltools/internal/cookies"
+	"github.com/IamCoder18/schooltools/internal/cookies"
 )
 
 // CookieExpiry describes one session cookie's expiry in human-readable form.

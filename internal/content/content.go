@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 
-	"github.com/aarav/schooltools/internal/dupdata"
-	"github.com/aarav/schooltools/internal/httpclient"
-	"github.com/aarav/schooltools/internal/ua"
+	"github.com/IamCoder18/schooltools/internal/dupdata"
+	"github.com/IamCoder18/schooltools/internal/httpclient"
+	"github.com/IamCoder18/schooltools/internal/ua"
 )
 
 // LEVersion is the LE product version to talk to. Resolved through

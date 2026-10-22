@@ -22,8 +22,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aarav/schooltools/internal/httpclient"
-	"github.com/aarav/schooltools/internal/ua"
+	"github.com/IamCoder18/schooltools/internal/httpclient"
+	"github.com/IamCoder18/schooltools/internal/ua"
 )
 
 // Versions holds the highest supported product version per D2L Valence

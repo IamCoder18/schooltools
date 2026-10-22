@@ -3,7 +3,7 @@ package httpclient_test
 import (
 	"testing"
 
-	"github.com/aarav/schooltools/internal/httpclient"
+	"github.com/IamCoder18/schooltools/internal/httpclient"
 	"github.com/stretchr/testify/assert"
 )
 

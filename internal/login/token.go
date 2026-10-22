@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aarav/schooltools/internal/httpclient"
-	"github.com/aarav/schooltools/internal/session"
-	"github.com/aarav/schooltools/internal/ua"
+	"github.com/IamCoder18/schooltools/internal/httpclient"
+	"github.com/IamCoder18/schooltools/internal/session"
+	"github.com/IamCoder18/schooltools/internal/ua"
 )
 
 // D2LTokenEndpoint is the Brightspace OAuth2 token endpoint reachable from

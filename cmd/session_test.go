@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/aarav/schooltools/internal/session"
+	"github.com/IamCoder18/schooltools/internal/session"
 )
 
 func TestExpiryPhrase(t *testing.T) {

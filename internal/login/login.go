@@ -14,13 +14,13 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 
-	"github.com/aarav/schooltools/internal/cookies"
-	stderrors "github.com/aarav/schooltools/internal/errors"
-	"github.com/aarav/schooltools/internal/httpclient"
-	"github.com/aarav/schooltools/internal/mfa"
-	"github.com/aarav/schooltools/internal/retry"
-	"github.com/aarav/schooltools/internal/session"
-	"github.com/aarav/schooltools/internal/ua"
+	"github.com/IamCoder18/schooltools/internal/cookies"
+	stderrors "github.com/IamCoder18/schooltools/internal/errors"
+	"github.com/IamCoder18/schooltools/internal/httpclient"
+	"github.com/IamCoder18/schooltools/internal/mfa"
+	"github.com/IamCoder18/schooltools/internal/retry"
+	"github.com/IamCoder18/schooltools/internal/session"
+	"github.com/IamCoder18/schooltools/internal/ua"
 )
 
 const (

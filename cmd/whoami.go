@@ -9,16 +9,16 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/aarav/schooltools/internal/authlog"
-	"github.com/aarav/schooltools/internal/cookies"
-	"github.com/aarav/schooltools/internal/dupdata"
-	"github.com/aarav/schooltools/internal/env"
-	stderrors "github.com/aarav/schooltools/internal/errors"
-	"github.com/aarav/schooltools/internal/httpclient"
-	"github.com/aarav/schooltools/internal/login"
-	"github.com/aarav/schooltools/internal/render"
-	"github.com/aarav/schooltools/internal/session"
-	"github.com/aarav/schooltools/internal/ua"
+	"github.com/IamCoder18/schooltools/internal/authlog"
+	"github.com/IamCoder18/schooltools/internal/cookies"
+	"github.com/IamCoder18/schooltools/internal/dupdata"
+	"github.com/IamCoder18/schooltools/internal/env"
+	stderrors "github.com/IamCoder18/schooltools/internal/errors"
+	"github.com/IamCoder18/schooltools/internal/httpclient"
+	"github.com/IamCoder18/schooltools/internal/login"
+	"github.com/IamCoder18/schooltools/internal/render"
+	"github.com/IamCoder18/schooltools/internal/session"
+	"github.com/IamCoder18/schooltools/internal/ua"
 )
 
 type whoamiUser struct {

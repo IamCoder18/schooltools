@@ -8,7 +8,7 @@ import (
 
 	"github.com/xlab/treeprint"
 
-	"github.com/aarav/schooltools/internal/content"
+	"github.com/IamCoder18/schooltools/internal/content"
 )
 
 // Options controls what is rendered alongside each node label.

@@ -3,7 +3,7 @@ package errors_test
 import (
 	"testing"
 
-	stderrors "github.com/aarav/schooltools/internal/errors"
+	stderrors "github.com/IamCoder18/schooltools/internal/errors"
 	"github.com/stretchr/testify/assert"
 )
 

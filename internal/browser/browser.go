@@ -4,7 +4,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/aarav/schooltools/internal/ua"
+	"github.com/IamCoder18/schooltools/internal/ua"
 )
 
 // RequestContext carries everything browser-faithful header generation needs

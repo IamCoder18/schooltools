@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/aarav/schooltools/internal/content"
+	"github.com/IamCoder18/schooltools/internal/content"
 )
 
 func TestRunDownloadsFileBodyWithUnescapedURL(t *testing.T) {

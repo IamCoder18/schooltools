@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aarav/schooltools/internal/content"
+	"github.com/IamCoder18/schooltools/internal/content"
 )
 
 func TestPrunePlanWritesNothing(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/aarav/schooltools/internal/content"
+	"github.com/IamCoder18/schooltools/internal/content"
 )
 
 func TestTopicReportFileTopic(t *testing.T) {

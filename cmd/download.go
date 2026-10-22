@@ -12,12 +12,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/aarav/schooltools/internal/content"
-	"github.com/aarav/schooltools/internal/httpclient"
-	"github.com/aarav/schooltools/internal/render"
-	"github.com/aarav/schooltools/internal/session"
-	"github.com/aarav/schooltools/internal/ua"
-	"github.com/aarav/schooltools/internal/urlutil"
+	"github.com/IamCoder18/schooltools/internal/content"
+	"github.com/IamCoder18/schooltools/internal/httpclient"
+	"github.com/IamCoder18/schooltools/internal/render"
+	"github.com/IamCoder18/schooltools/internal/session"
+	"github.com/IamCoder18/schooltools/internal/ua"
+	"github.com/IamCoder18/schooltools/internal/urlutil"
 )
 
 var (

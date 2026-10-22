@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/aarav/schooltools/internal/authlog"
-	"github.com/aarav/schooltools/internal/session"
+	"github.com/IamCoder18/schooltools/internal/authlog"
+	"github.com/IamCoder18/schooltools/internal/session"
 	"github.com/spf13/cobra"
 )
 

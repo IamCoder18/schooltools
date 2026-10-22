@@ -14,7 +14,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/aarav/schooltools/internal/authlog"
+	"github.com/IamCoder18/schooltools/internal/authlog"
 )
 
 // Event is a single decoded auth.log row. We keep the raw map alongside the

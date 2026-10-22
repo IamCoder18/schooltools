@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/PuerkitoBio/goquery"
-	stderrors "github.com/aarav/schooltools/internal/errors"
-	"github.com/aarav/schooltools/internal/mfa"
+	stderrors "github.com/IamCoder18/schooltools/internal/errors"
+	"github.com/IamCoder18/schooltools/internal/mfa"
 	"github.com/stretchr/testify/assert"
 )
 

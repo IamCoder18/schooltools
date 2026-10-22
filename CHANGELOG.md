@@ -58,6 +58,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   output is a single object with named sub-objects (`folder`,
   `submissions`, `feedback`, `quiz`, `attempts`, `news`, `related`).
   **This is a breaking change for scripts that read a bare array.**
+- **Module path renamed** `github.com/aarav/schooltools` →
+  `github.com/IamCoder18/schooltools`, matching where the repository is
+  actually hosted. The old path never resolved (it 404s on GitHub), so
+  `go install github.com/aarav/schooltools@latest` could not work — the
+  README's `go install .` was the only way in. Import paths in every file
+  follow the module path, so this is a large but purely mechanical diff.
+  It also repairs the repository's own doc links (`SECURITY.md`, the
+  release-compare URLs), which pointed at the same dead path.
+  **Breaking:** anything importing the old path must update.
 - `course list` gained an `Activity` column summarising what needs you per
   course (quizzes to try, feedback to read, unread posts) from a single
   `updates/myUpdates` call.
@@ -604,7 +613,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 - Original TypeScript CLI prototype.
 
-[Unreleased]: https://github.com/aarav/schooltools/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/aarav/schooltools/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/aarav/schooltools/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/aarav/schooltools/releases/tag/v0.1.0
+[Unreleased]: https://github.com/IamCoder18/schooltools/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/IamCoder18/schooltools/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/IamCoder18/schooltools/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/IamCoder18/schooltools/releases/tag/v0.1.0

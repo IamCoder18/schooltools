@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/aarav/schooltools/internal/render"
+	"github.com/IamCoder18/schooltools/internal/render"
 )
 
 func withUTCLocal(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/aarav/schooltools/internal/httpclient"
+	"github.com/IamCoder18/schooltools/internal/httpclient"
 )
 
 func captureStderr(t *testing.T, fn func()) string {

@@ -6,9 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/aarav/schooltools/internal/d2lver"
-	"github.com/aarav/schooltools/internal/render"
-	"github.com/aarav/schooltools/internal/ua"
+	"github.com/IamCoder18/schooltools/internal/d2lver"
+	"github.com/IamCoder18/schooltools/internal/render"
+	"github.com/IamCoder18/schooltools/internal/ua"
 )
 
 var versionsCmd = &cobra.Command{

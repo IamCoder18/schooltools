@@ -6,7 +6,7 @@ about: Settings for the issue tracker.
 blank_issues_enabled: false
 contact_links:
   - name: Security disclosures
-    url: https://github.com/aarav/schooltools/blob/main/SECURITY.md
+    url: https://github.com/IamCoder18/schooltools/blob/main/SECURITY.md
     about: "Please do NOT use GitHub issues for security bugs. Email iamcoder18@gmail.com."
   - name: D2L / CBE account help
     url: https://www.cbe.ab.ca/

@@ -8,13 +8,13 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/aarav/schooltools/internal/authlog"
-	"github.com/aarav/schooltools/internal/cookies"
-	"github.com/aarav/schooltools/internal/d2lver"
-	"github.com/aarav/schooltools/internal/env"
-	"github.com/aarav/schooltools/internal/login"
-	"github.com/aarav/schooltools/internal/session"
-	stderrors "github.com/aarav/schooltools/internal/errors"
+	"github.com/IamCoder18/schooltools/internal/authlog"
+	"github.com/IamCoder18/schooltools/internal/cookies"
+	"github.com/IamCoder18/schooltools/internal/d2lver"
+	"github.com/IamCoder18/schooltools/internal/env"
+	"github.com/IamCoder18/schooltools/internal/login"
+	"github.com/IamCoder18/schooltools/internal/session"
+	stderrors "github.com/IamCoder18/schooltools/internal/errors"
 )
 
 var (

@@ -1,4 +1,4 @@
-module github.com/aarav/schooltools
+module github.com/IamCoder18/schooltools
 
 go 1.26.0
 

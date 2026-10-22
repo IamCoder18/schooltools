@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aarav/schooltools/internal/authlog"
-	"github.com/aarav/schooltools/internal/cookies"
-	"github.com/aarav/schooltools/internal/d2lver"
-	stderrors "github.com/aarav/schooltools/internal/errors"
-	"github.com/aarav/schooltools/internal/env"
+	"github.com/IamCoder18/schooltools/internal/authlog"
+	"github.com/IamCoder18/schooltools/internal/cookies"
+	"github.com/IamCoder18/schooltools/internal/d2lver"
+	stderrors "github.com/IamCoder18/schooltools/internal/errors"
+	"github.com/IamCoder18/schooltools/internal/env"
 )
 
 // EnsureOptions bundles flags used by every authenticated command.

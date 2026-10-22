@@ -3,9 +3,9 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/aarav/schooltools/internal/authlog"
-	"github.com/aarav/schooltools/internal/httpclient"
-	"github.com/aarav/schooltools/internal/ua"
+	"github.com/IamCoder18/schooltools/internal/authlog"
+	"github.com/IamCoder18/schooltools/internal/httpclient"
+	"github.com/IamCoder18/schooltools/internal/ua"
 	"github.com/spf13/cobra"
 )
 

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aarav/schooltools/internal/content"
+	"github.com/IamCoder18/schooltools/internal/content"
 )
 
 // fakeClock stands in for time.Now/time.Sleep so pacer arithmetic can be

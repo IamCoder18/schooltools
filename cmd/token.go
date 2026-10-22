@@ -6,10 +6,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/aarav/schooltools/internal/authlog"
-	"github.com/aarav/schooltools/internal/login"
-	"github.com/aarav/schooltools/internal/render"
-	"github.com/aarav/schooltools/internal/session"
+	"github.com/IamCoder18/schooltools/internal/authlog"
+	"github.com/IamCoder18/schooltools/internal/login"
+	"github.com/IamCoder18/schooltools/internal/render"
+	"github.com/IamCoder18/schooltools/internal/session"
 )
 
 var (

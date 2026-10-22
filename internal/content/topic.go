@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/aarav/schooltools/internal/httpclient"
+	"github.com/IamCoder18/schooltools/internal/httpclient"
 )
 
 // Topic matches the document returned by

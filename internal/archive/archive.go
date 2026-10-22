@@ -80,10 +80,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aarav/schooltools/internal/content"
-	"github.com/aarav/schooltools/internal/httpclient"
-	"github.com/aarav/schooltools/internal/ua"
-	"github.com/aarav/schooltools/internal/urlutil"
+	"github.com/IamCoder18/schooltools/internal/content"
+	"github.com/IamCoder18/schooltools/internal/httpclient"
+	"github.com/IamCoder18/schooltools/internal/ua"
+	"github.com/IamCoder18/schooltools/internal/urlutil"
 )
 
 var errSessionExpired = errors.New("session expired; run 'schooltools login'")

@@ -8,10 +8,10 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/aarav/schooltools/internal/authlog"
-	stderrors "github.com/aarav/schooltools/internal/errors"
-	"github.com/aarav/schooltools/internal/httpclient"
-	"github.com/aarav/schooltools/internal/ua"
+	"github.com/IamCoder18/schooltools/internal/authlog"
+	stderrors "github.com/IamCoder18/schooltools/internal/errors"
+	"github.com/IamCoder18/schooltools/internal/httpclient"
+	"github.com/IamCoder18/schooltools/internal/ua"
 )
 
 // Heartbeat does a single cheap authenticated request against D2L to confirm

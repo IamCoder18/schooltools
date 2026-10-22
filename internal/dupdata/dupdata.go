@@ -16,10 +16,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aarav/schooltools/internal/d2lver"
-	"github.com/aarav/schooltools/internal/httpclient"
-	"github.com/aarav/schooltools/internal/session"
-	"github.com/aarav/schooltools/internal/ua"
+	"github.com/IamCoder18/schooltools/internal/d2lver"
+	"github.com/IamCoder18/schooltools/internal/httpclient"
+	"github.com/IamCoder18/schooltools/internal/session"
+	"github.com/IamCoder18/schooltools/internal/ua"
 )
 
 // PagingInfo matches the standard D2L "bookmark" pagination envelope that

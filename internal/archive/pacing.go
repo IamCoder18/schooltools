@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aarav/schooltools/internal/content"
-	"github.com/aarav/schooltools/internal/retry"
+	"github.com/IamCoder18/schooltools/internal/content"
+	"github.com/IamCoder18/schooltools/internal/retry"
 )
 
 // DefaultRequestInterval is the floor on the wall-clock gap between two

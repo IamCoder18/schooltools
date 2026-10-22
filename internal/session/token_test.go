@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aarav/schooltools/internal/session"
+	"github.com/IamCoder18/schooltools/internal/session"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

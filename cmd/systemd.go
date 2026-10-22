@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/aarav/schooltools/internal/render"
-	"github.com/aarav/schooltools/internal/systemd"
+	"github.com/IamCoder18/schooltools/internal/render"
+	"github.com/IamCoder18/schooltools/internal/systemd"
 )
 
 var (

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aarav/schooltools/internal/retry"
+	"github.com/IamCoder18/schooltools/internal/retry"
 	"github.com/stretchr/testify/assert"
 )
 

@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aarav/schooltools/internal/content"
-	"github.com/aarav/schooltools/internal/d2lver"
+	"github.com/IamCoder18/schooltools/internal/content"
+	"github.com/IamCoder18/schooltools/internal/d2lver"
 	"golang.org/x/net/publicsuffix"
 )
 

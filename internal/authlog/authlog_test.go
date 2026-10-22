@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aarav/schooltools/internal/authlog"
+	"github.com/IamCoder18/schooltools/internal/authlog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

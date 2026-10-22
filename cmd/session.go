@@ -7,9 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/aarav/schooltools/internal/render"
-	"github.com/aarav/schooltools/internal/session"
-	"github.com/aarav/schooltools/internal/table"
+	"github.com/IamCoder18/schooltools/internal/render"
+	"github.com/IamCoder18/schooltools/internal/session"
+	"github.com/IamCoder18/schooltools/internal/table"
 )
 
 var sessionCmd = &cobra.Command{

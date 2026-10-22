@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aarav/schooltools/internal/authstats"
+	"github.com/IamCoder18/schooltools/internal/authstats"
 )
 
 const sample = `{"ts":"2026-09-04T03:14:34.000Z","event":"saml.captured"}

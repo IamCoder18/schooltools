@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aarav/schooltools/internal/content"
+	"github.com/IamCoder18/schooltools/internal/content"
 )
 
 // TestRepro_Issue1_RunPopulatesIndexEntryCounts reproduces KNOWN_ISSUES #1:
