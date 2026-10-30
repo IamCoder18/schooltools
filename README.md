@@ -55,7 +55,7 @@ README spotlight; everything else lives further down.
 | Command | Purpose |
 | --- | --- |
 | `course` / `enrollment` | List courses (`course list`) or show a course's detail (`course get <orgUnitId>`). |
-| `content` | Show a course's modules + topics. Scope with `--course <id>`; subcommand `get <topicId>` for one topic. |
+| `content` | Show a course's modules + topics. Scope with `--course <id>`; subcommands `get <topicId>` for one topic, `progress <topicId>` to read your progress record, `done` / `viewed` to write it. |
 | `download` | Save a single topic's file (or metadata JSON). Scope with `--course <id>`; positional is the topicId alone. |
 | `archive` | Snapshot courses into a versioned, UUID-named blob store. Subcommand `list` for the saved index. |
 | `assignment` / `dropbox` | List folders, show my submissions, download files. Scope with `--course <id>`. |
@@ -213,6 +213,8 @@ missing bodies); the mutating pass is `archive update`.
 | `archive` | Status (counts, freshness, missing bodies, lock, `try:` hints) |
 | `archive update [courseId...]` | Fetch new/changed + fill missing bodies |
 | `archive update --dry-run` | Plan only — writes nothing |
+| `archive update --mark-unvisited visited\|completed` | Opt-in progress pass: mark every unvisited topic visited (or completed) |
+| `archive update --min-visits N` / `--set-visits N` | Opt-in progress pass: raise topics below N to N visits / set every topic to exactly N (raising or lowering) |
 | `archive list` | Courses in the store |
 | `archive find [query...]` | Search titles / URLs (`--ext`, `--type`, `--with-bodies`, `--missing-bodies`) |
 | `archive show <ref>` | Topic record + version history |
@@ -300,6 +302,9 @@ specifically need scriptable access.
 | `news [--course <id>] [get <newsId>] [attachment <newsId> <fileId>]` | `/news/`, `/news/<id>/attachments/<fileId>` | Course announcements. |
 | `grade [--course <id>] [--final] [get <gradeObjectId>]` | `/grades/values/myGradeValues/`, `/grades/final/values/myGradeValue` | Numeric grades. |
 | `discussion [--course <id>] [forum <forumId>] [post <topicId>]` | `/discussions/forums/`, `/posts/` | Page-number pagination, per D2L research §2.2. |
+| `content progress <topicId>` | `GET /content/userprogress/<id>` (unstable) | Read your own progress record (visits, time, completion). Read-only. |
+| `content done <topicId> [--date ISO] [--undo]` | `POST /content/userprogress/` (unstable) | Mark a topic done for yourself (`--date` backdates, `--undo` clears). Writes only when run. |
+| `content viewed <topicId> [--set-visits N] [--min-visits N] [--time 15m] [--wait]` | `POST /content/userprogress/` (unstable) | Set visits to exactly N (reducing included), raise to N, and/or record viewing time. Writes only when run. |
 
 ### User-scoped
 

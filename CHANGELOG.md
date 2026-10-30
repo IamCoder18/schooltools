@@ -7,6 +7,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Content progress commands** (write your own per-topic progress record
+  — the data behind Content Statistics / Class Progress). Nothing is ever
+  written without running one of these:
+  - `content progress <topicId> --course <id>` shows the current record
+    (read-only).
+  - `content done <topicId> --course <id>` marks a topic as done.
+    `--date <ISO8601>` backdates the completion timestamp; `--undo`
+    clears the completion and its date.
+  - `content viewed <topicId> --course <id>` sets visits and/or records
+    viewing time. `--set-visits N` sets the count to exactly N — topics
+    not at N are changed, including topics above N (reducing);
+    `--min-visits N` raises only. `--time 15m` records viewing time,
+    which the server clamps to the gap since the record's last visit
+    (the effective value is always reported); `--wait` sleeps out the gap
+    and re-posts until the full amount is credited.
+  All writes send the full userprogress block, echo the server's
+  effective record, and attach the `X-Csrf-Token` header the tenant
+  eventually requires (re-scraped from `/d2l/home` on a 403 retry).
+- **`archive update` progress pass.** Opt-in flags `--mark-unvisited
+  visited|completed`, `--min-visits N` and `--set-visits N` write
+  content-progress records in bulk across every topic in scope (one write
+  per topic, and only for topics that would change). `--mark-unvisited`
+  touches only topics you have not visited, `--min-visits` raises topics
+  below N to N, and `--set-visits` normalizes every topic to exactly N
+  visits. `--dry-run` prints the plan without writing. Plain
+  `archive update` (and every other command) never writes progress.
 - `archive update` spaces its D2L requests out instead of firing them as
   fast as the network returns them. Each gap is a randomized duration in
   `[N, 2N)` rather than a fixed `N`, so consecutive requests don't land in

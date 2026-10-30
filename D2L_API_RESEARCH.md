@@ -332,8 +332,8 @@ The most‑trodden family for schooltools today.
 | `GET /d2l/api/le/<le>/<orgId>/content/topics/<topicId>/file` | `content:file:read` | **Raw bytes**, not JSON. **Already used by `schooltools download`.** |
 | `GET /d2l/api/le/<le>/<orgId>/content/bookmarks` | `content:toc:read` | Bookmarked topics. |
 | `GET /d2l/api/le/<le>/<orgId>/content/recent` | `content:toc:read` | |
-| `GET /d2l/api/le/<le>/<orgId>/content/completions/mycount/` | `content:completions:read` | |
-| `GET /d2l/api/le/<le>/<orgId>/content/userprogress/<topicId>` | `content:completions:read` | |
+| `GET /d2l/api/le/<le>/<orgId>/content/completions/mycount/` | `content:completions:read` | Requires a `level` query param (see §8). |
+| `GET /d2l/api/le/unstable/<orgId>/content/userprogress/<topicId>` | (none documented) | **Unstable contract only** — 404 at numeric versions. See §8. |
 
 ### 4.5 Due items, calendar, updates, news (`le`)
 
@@ -658,7 +658,254 @@ defines the JSON shapes and URL builders — exactly the way the existing
 
 ---
 
-## 8. Source links
+## 8. Content progress & completion — write routes (mark-done / time-on-content)
+
+Scope of this section: the routes that let the CLI (a) **mark a content
+topic as done** for the calling user, and (b) **record time spent /
+visits on a topic** so that the teacher-facing statistics (Content
+Statistics "average time spent", Class Progress) reflect it. Written up
+because these are the *write* side of the routes catalogued in §4.4 —
+the read side feeds exactly the reports teachers see.
+
+All findings below dated **2026-10-29/30** and verified live against the
+tenant (student role) — both read and write probes. The finalized
+request contract is in §8.6.
+
+### 8.1 Data model
+
+`UserProgressData` (per user × topic) — the record both teacher reports
+aggregate:
+
+```json
+{
+  "ObjectId": 0,          // topicId
+  "UserId": 0,            // POST: must be the calling user
+  "CompletedDate": "…",   // UTCDateTime | null
+  "IsRead": true,
+  "NumVisits": 0,
+  "TotalTime": 0,         // seconds
+  "LastVisited": "…",    // UTCDateTime | null
+  "Visited": true,
+  "Completed": true,
+  "IsExempt": false       // omitted when false
+}
+```
+
+`ContentTopicCompletionUpdate` (topic completion write body):
+
+```json
+{ "CompletedDate": "<UTCDateTime>" }   // null = un-complete
+```
+
+Topic completion type (`CONTENT_COMPLETIONTYPE_T`, also in the ToC):
+`1` Manual ("Mark as done" button), `2` Auto (completes on visit/read),
+`3` None (exempt or optional; optional topics can still carry
+completion).
+
+### 8.2 Write routes
+
+| Route | Body | Purpose | Version / scope |
+| --- | --- | --- | --- |
+| `POST /d2l/api/le/unstable/<orgId>/content/userprogress/` | full `UserProgressData` | **The student-side write route.** Mark done (`Completed`, `CompletedDate` — backdating works), set `NumVisits`/`IsRead`/`Visited`, credit `TotalTime` (clamped — see §8.3). Returns the updated record (server-side clamping is observable in the echo). | **unstable contract only** (404 at numeric versions); self-only |
+| `PUT /d2l/api/le/<le>/<orgId>/content/topics/<topicId>/completions/users/<userId>` | `ContentTopicCompletionUpdate` | Teacher-side completion tracking. **403 for the student role** on every topic type (verified Auto + Optional, even idempotent re-PUT) — do not rely on it. | family ≥ v1.28 (re-documented 1.82+); scope `content:completions:write`; numeric version fine, `unstable` 404s |
+| `PUT /d2l/api/lp/<lp>/enrollments/orgUnits/<orgId>/users/<userId>/completion` | `CompletionParameterData` (`Completion`, `CompletionDate`, `Overwrite`) | Whole-course completion (bonus). | LP v1.49+; scope `enrollment:completion:update`; 404 if completion tracking disabled for the org unit |
+
+### 8.3 Verified write semantics of `POST …/content/userprogress/`
+
+Probe-confirmed against the live tenant (2026-10-29/30):
+
+- **Body must be the full block** — `ObjectId`, `UserId`,
+  `CompletedDate`, `IsRead`, `NumVisits`, `TotalTime`, `LastVisited`,
+  `Visited`, `Completed` are **all required**; dropping any one →
+  `400 Invalid Parameters`. `IsExempt` must be omitted (output-only).
+- **`TotalTime` = `min(requested, current + (now − LastVisited))`** —
+  i.e. a write can credit at most the wall-clock idle gap since the last
+  recorded visit. Verified: +3 s requested after a 5-min gap → accepted
+  as-is; 99,999 s requested 1 s later → clamped to `current+1`; +1 h
+  against a 50-day-old `LastVisited` → accepted in full; 100,000,000 s →
+  clamped to `current+1`. A **never-visited** topic credits **0** on its
+  first write (no gap yet) and sets `LastVisited`; from then on time
+  accrues against real gaps. The docs' "past the last login time" note
+  is really this gap rule. Monotonicity ("cannot update to a lower
+  value") is documented but unverified (the one lowering probe hit the
+  CSRF lockout, below) — never rely on lowering.
+- **`LastVisited` is always overwritten with server "now"** — client
+  value ignored (backdating attempts silently replaced).
+- **`Completed` + `CompletedDate` honored exactly as sent, including
+  backdated dates** (a 2026-10-01 date on a 2026-10-29 write stuck).
+  `Completed=false, CompletedDate=null` un-completes. `IsRead`/`Visited`
+  do **not** trigger auto-completion (record stays `Completed:false` if
+  sent so).
+- **`NumVisits` freely settable**, including downward. `IsRead`,
+  `Visited` honored as sent.
+- **Self-only** (documented; `UserId` must be the caller). Response is
+  `200` + the updated record — always diff the echo for effective
+  values.
+- Role permissions still apply; OAuth2 scopes don't gate anything here
+  (CLI token is minted with `scope=*:*:*`, `internal/login/token.go`).
+
+**CSRF state — operational finding.** After some amount of session
+activity the tenant returns `403 {"Errors":[{"Message":"Forbidden"}]}`
+for **every** API call (GETs included) that lacks an `X-Csrf-Token`
+header, while the identical call with the token succeeds immediately.
+The token is the `XSRF.Token` D2L bootstraps into `localStorage` on
+`/d2l/home` (the same scrape `internal/login.fetchXSRFToken` does).
+Always send `X-Csrf-Token` + `X-Requested-With: XMLHttpRequest` on API
+calls. Error body shapes vary by route (`{"Errors":[…]}` vs Valence
+`problem+json`) — parse both.
+
+**Two separate stores** (re-checked 15 min after the write):
+- `userprogress` (unstable): visits, time, completed flags — what
+  `POST` writes.
+- `content/topics/{id}/completions…` (`ContentTopicCompletion`,
+  "content completion tracking"): written by the auto-completion engine
+  on real visits and by instructors via `PUT`. `POST` does **not**
+  cascade into it — after a POST mark-done, `completions/users/{me}`
+  stayed `CompletionDate: null` and aggregates
+  (`completions/?userIdsCSV=`, `mycount/?level=`) stayed at 44/99.
+  A POST-marked "done" therefore shows in progress/Class Progress data
+  but not in completion-tracking counters.
+
+### 8.4 Live probe results (2026-10-29, read-only)
+
+Probed with the student session (user `782002`), course `1522695`
+("Sci 10 Fall 2026 Graham"), discovered versions `le=1.97`, `lp=1.63`.
+
+| Probe | Result |
+| --- | --- |
+| `GET /d2l/api/le/1.97/<cid>/content/userprogress/<topicId>` | **404** |
+| `GET /d2l/api/le/1.47/<cid>/content/userprogress/<topicId>` | **404** |
+| `GET /d2l/api/le/unstable/<cid>/content/userprogress/<topicId>?userId=<me>` | **200** — the route is **unstable-contract only**; the version segment must literally be `unstable` |
+| `GET /d2l/api/le/unstable/<cid>/content/userprogress/?userId=<me>` | **200** — object-list page `{ "Objects": [ … ], "Next": … }` (not `PagingInfo`), most recent activity first |
+| `GET /d2l/api/le/1.97/<cid>/content/topics/<topicId>/completions/users/<me>` | **200** — `ContentTopicCompletion` (numeric version fine) |
+| `GET /d2l/api/le/1.97/<cid>/content/topics/<topicId>/completions/` | **200** — `{"Objects":[…],"Next":null}` (users the caller can see) |
+| `GET /d2l/api/le/1.97/<cid>/content/completions/?userIdsCSV=<me>` | **200** — bare array `[{OrgUnitId, UserId, RequiredItems: 99, CompletedItems: 44}]` |
+| `GET /d2l/api/le/unstable/<cid>/content/completions/mycount/` | 404; at `1.97` the route exists but **400s without `?level=`** (`CONTENTCOMPLETIONLEVEL_T`) |
+
+Record with real progress (topic 19448669, auto-completion topic):
+
+```json
+{"ObjectId":19448669,"UserId":782002,"CompletedDate":"2026-09-02T01:28:16.260Z",
+ "IsRead":true,"NumVisits":14,"TotalTime":13888,"LastVisited":"2026-09-20T21:10:01.017Z",
+ "Visited":true,"Completed":true}
+```
+
+Default-state record for a never-visited topic (19448665) — the
+single-topic GET returns these rows too, which makes it the right
+pre-write snapshot and the "who hasn't opened it" query:
+
+```json
+{"ObjectId":19448665,"UserId":782002,"CompletedDate":null,"IsRead":false,
+ "NumVisits":0,"TotalTime":0,"LastVisited":null,"Visited":false,"Completed":false}
+```
+
+Observed organic values worth mimicking when fabricating: single-visit
+completions carry `CompletedDate ≈ LastVisited` to the millisecond and
+`TotalTime` of 2–155 s for real reading; auto-type topics (all topics in
+1522695 are `CompletionType: 2`) complete on first visit. The ToC
+(`internal/content`) does **not** currently parse `CompletionType`,
+`Unread`, or `IsExempt` even though the JSON carries them.
+
+### 8.5 Write-probe outcomes — questions resolved (2026-10-29/30)
+
+| # | Question | Outcome |
+| --- | --- | --- |
+| Q3 | Which fields does `POST` honor? | All except `LastVisited` (forced server-now) and `TotalTime` (gap-clamped, §8.3). `Completed` + backdated `CompletedDate` honored exactly. |
+| Q4 | `TotalTime` clamp semantics | `min(requested, current + (now − LastVisited))` — idle-gap credit model |
+| Q5 | `PUT completions` for students / backdating | **403 for the student role** on Auto *and* Optional topics (even idempotent re-PUT of the existing date) → role enforcement, teacher-only. Student mark-done = `POST userprogress` |
+| Q6 | Does `IsRead` auto-complete Auto topics via POST? | No — `Completed` stays as sent |
+
+Probe residue on the tenant (irreversible `TotalTime`, kept deliberately):
+`1522695`/`19448665` completed with backdated `2026-10-01`, 3 visits,
+time 1s; `1522695`/`19501728` un-completed, 2 visits, time 20s;
+`1522695`/`19448666` time inflated 2→3603 s (completion date untouched);
+`1527886`/`19278283` fully untouched (all writes 403'd).
+
+### 8.6 Finalized API structure
+
+Mark done (+ optional time credit) — one call does both:
+
+```
+POST /d2l/api/le/unstable/<orgUnitId>/content/userprogress/
+X-Csrf-Token: <XSRF.Token scraped from /d2l/home>
+X-Requested-With: XMLHttpRequest
+Content-Type: application/json
+
+{"ObjectId":<topicId>,"UserId":<me>,"CompletedDate":"<ISO8601; backdating works>",
+ "IsRead":true,"NumVisits":<n>,"TotalTime":<s>,"LastVisited":"<ignored>",
+ "Visited":true,"Completed":true}
+```
+
+Record viewing time only: same body with `"Completed":false` /
+`"CompletedDate":null`. Undo a mark-done: same with `"Completed":false,
+"CompletedDate":null`. Response is always the effective record — parse
+and report it.
+
+Credit algorithm for "viewed for X seconds":
+1. Never-visited topic: first call credits 0 s (sets `LastVisited`);
+   each later call can credit up to the real gap since the previous
+   call/visit. So X seconds on a fresh topic needs a real X-second gap
+   (two calls, or a scheduled re-post).
+2. Topic with an old `LastVisited`: the whole idle gap is creditable in
+   one call (verified: +1 h against a 50-day gap accepted instantly).
+3. Target `TotalTime` should be `current + X` and is silently clamped;
+   always surface the echoed value to the user.
+
+Verification reads:
+
+```
+GET /d2l/api/le/unstable/<cid>/content/userprogress/<topicId>?userId=<me>   # per-topic (incl. default-state rows)
+GET /d2l/api/le/unstable/<cid>/content/userprogress/?userId=<me>            # paged {Objects,Next}
+GET /d2l/api/le/<le>/<cid>/content/topics/<topicId>/completions/users/<me>  # completion-tracking store
+GET /d2l/api/le/<le>/<cid>/content/completions/?userIdsCSV=<me>             # aggregate (bare array)
+GET /d2l/api/le/<le>/<cid>/content/completions/mycount/?level=<1|2|3>       # level param required
+```
+
+Version rules: everything `userprogress` → literal `unstable` in the
+version slot; `completions/*` and ToC → discovered `<le>` (1.97 on CBE).
+
+### 8.7 Implementation seams (for when this becomes a feature)
+
+**Status: implemented** (2026-10-30) — `internal/progress` (client with
+CSRF retry, planner, bulk pass), `cmd/content_progress.go`
+(`content done` / `content viewed` / `content progress`), and the
+`archive update` progress flags (`--mark-unvisited`, `--min-visits`,
+`--set-visits`; `--dry-run` plans). The XSRF scrape was lifted to
+`httpclient.FetchXSRFToken`. The seams below are kept for reference.
+
+- `internal/content`: extend `TocTopic` with `CompletionType`, `Unread`,
+  `IsExempt`; add URL builders next to `TocURL`/`TopicURL` for
+  `…/content/userprogress/` (note the literal `unstable` version slot —
+  `LEVersion()` can't be used there).
+- Attach `X-Csrf-Token` + `X-Requested-With` on API calls (§8.3);
+  `internal/login.fetchXSRFToken` already does the scrape — lift it so
+  `internal/httpclient` can use it before writes.
+- Call through `internal/httpclient` + `session.LoadJar()`/
+  `EnsureSession` so the bearer auto-refresh applies.
+- Command surface: subcommand under `cmd/content.go` (e.g.
+  `content done <topicId> --course <id>`, `content viewed <topicId>
+  --time 15m --visits 3`) or `cmd/per_course_rare.go`; one concern per
+  PR.
+- `--json` output must use an envelope with `count` (KNOWN_ISSUES
+  #9–11). Tests in `*_test.go` with `httptest`. CHANGELOG under
+  `[Unreleased]`. No comments.
+- SCORM/LTI activity topics get completion from their own runtime, not
+  `userprogress` — scope the feature to File/Link topics or accept
+  partial coverage.
+
+### 8.8 Detection surface (read before building)
+
+These records are precisely what teachers see in Content Statistics and
+Class Progress, and admins can pull login history
+(`GET /d2l/api/lp/<lp>/users/<userId>/usertrackinglogs/`). Fabricated
+values that don't line up with login windows, visit counts, or the
+organic 2–155 s scale are visible anomalies; fabricating academic
+activity records may also violate CBE policy. Design (and use) the
+feature with that in mind.
+
+---
+
+## 9. Source links
 
   - Official Valence reference (entry point): <https://docs.valence.desire2learn.com/reference.html>
   - Routing table: <https://docs.valence.desire2learn.com/http-routingtable.html>

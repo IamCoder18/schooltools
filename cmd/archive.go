@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http/cookiejar"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,6 +16,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/IamCoder18/schooltools/internal/archive"
+	"github.com/IamCoder18/schooltools/internal/dupdata"
+	"github.com/IamCoder18/schooltools/internal/progress"
 	"github.com/IamCoder18/schooltools/internal/session"
 	"github.com/IamCoder18/schooltools/internal/table"
 	"github.com/IamCoder18/schooltools/internal/ui"
@@ -83,6 +86,10 @@ var (
 	archivePruneWait   bool
 
 	archiveVerifyDeep bool
+
+	archiveMarkUnvisited string
+	archiveMinVisits     int
+	archiveSetVisits     int
 )
 
 const staleThreshold = 24 * time.Hour
@@ -101,6 +108,9 @@ func init() {
 	archiveUpdateCmd.Flags().BoolVar(&archiveUpdateNoRefresh, "no-auto-refresh", false, "Do not re-run login if the saved session has expired")
 	archiveUpdateCmd.Flags().BoolVar(&archiveUpdateWait, "wait", false, "Block instead of failing when another archive run holds the lock")
 	archiveUpdateCmd.Flags().DurationVar(&archiveUpdateInterval, "request-interval", archive.DefaultRequestInterval, "Floor on the gap between D2L requests; the real gap is randomized above it, so 0 disables pacing entirely")
+	archiveUpdateCmd.Flags().StringVar(&archiveMarkUnvisited, "mark-unvisited", "", "Progress pass: mark every unvisited topic as visited (or \"completed\" to also complete it)")
+	archiveUpdateCmd.Flags().IntVar(&archiveMinVisits, "min-visits", 0, "Progress pass: give every topic below N visits exactly N visits (raises only)")
+	archiveUpdateCmd.Flags().IntVar(&archiveSetVisits, "set-visits", -1, "Progress pass: set every topic's visit count to exactly N; topics not at N are changed, including topics above N (reduces)")
 
 	archiveFindCmd.Flags().StringVar(&archiveFindExt, "ext", "", "Filter by URL extension (e.g. pdf, docx)")
 	archiveFindCmd.Flags().StringVar(&archiveFindType, "type", "", "Filter by topic type (File, Link)")
@@ -242,11 +252,21 @@ var archiveUpdateCmd = &cobra.Command{
 		"skipped and counted instead of aborting the pass — one dead topic can no\n" +
 		"longer stop the rest of your courses from archiving. A 401/403 response\n" +
 		"still stops the run with a \"session expired\" error.\n\n" +
+		"Optional progress pass: --mark-unvisited, --min-visits and --set-visits\n" +
+		"additionally write your own content-progress records (the ones behind\n" +
+		"Content Statistics and Class Progress) for every topic in scope. Nothing\n" +
+		"is ever written without one of these flags; --dry-run prints the plan.\n" +
+		"--mark-unvisited visited|completed touches only topics you have not\n" +
+		"visited, --min-visits N raises topics below N visits to N, and\n" +
+		"--set-visits N sets every topic to exactly N visits (raising or\n" +
+		"lowering). Each topic gets at most one write.\n\n" +
 		"Examples:\n" +
 		"  schooltools archive update\n" +
 		"  schooltools archive update 12345 67890\n" +
 		"  schooltools archive update --course 12345 --dry-run\n" +
-		"  schooltools archive update --no-bodies --no-auto-refresh",
+		"  schooltools archive update --no-bodies --no-auto-refresh\n" +
+		"  schooltools archive update --course 12345 --mark-unvisited completed --dry-run\n" +
+		"  schooltools archive update --course 12345 --set-visits 3",
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runArchiveUpdate(args)
@@ -256,6 +276,10 @@ var archiveUpdateCmd = &cobra.Command{
 func runArchiveUpdate(args []string) error {
 	if archiveUpdateInterval < 0 {
 		return fmt.Errorf("--request-interval must not be negative (got %s); pass 0 to disable pacing", archiveUpdateInterval)
+	}
+	planOpts, progressOn, err := progressPlanFromFlags(archiveMarkUnvisited, archiveMinVisits, archiveSetVisits)
+	if err != nil {
+		return err
 	}
 
 	abs, err := filepath.Abs(archiveDir)
@@ -312,8 +336,17 @@ func runArchiveUpdate(args []string) error {
 	}
 	elapsed := time.Since(start)
 
+	var pres *progress.BulkResult
+	if progressOn {
+		presVal, perr := runProgressPass(ens.Jar, scope, planOpts, false)
+		if perr != nil {
+			return perr
+		}
+		pres = &presVal
+	}
+
 	if archiveJSON {
-		out, _ := json.MarshalIndent(map[string]any{
+		payload := map[string]any{
 			"root":           result.Root,
 			"courseIds":      scope,
 			"coursesScanned": result.CoursesScanned,
@@ -326,7 +359,11 @@ func runArchiveUpdate(args []string) error {
 			"bodiesReused":   result.BodiesReused,
 			"bodiesFailed":   result.BodiesFailed,
 			"elapsedSeconds": elapsed.Seconds(),
-		}, "", "  ")
+		}
+		if pres != nil {
+			payload["progress"] = pres
+		}
+		out, _ := json.MarshalIndent(payload, "", "  ")
 		fmt.Println(string(out))
 		return nil
 	}
@@ -350,6 +387,9 @@ func runArchiveUpdate(args []string) error {
 		fmt.Println("File bodies: skipped (--no-bodies)")
 	} else {
 		fmt.Println("File bodies: 0 fetched (no eligible File topics this pass).")
+	}
+	if pres != nil {
+		printArchiveProgressResult(*pres, false)
 	}
 	return nil
 }
@@ -380,8 +420,21 @@ func runArchiveUpdateDryRun(args []string, abs string) error {
 	}
 	elapsed := time.Since(start)
 
+	planOpts, progressOn, err := progressPlanFromFlags(archiveMarkUnvisited, archiveMinVisits, archiveSetVisits)
+	if err != nil {
+		return err
+	}
+	var pres *progress.BulkResult
+	if progressOn {
+		presVal, perr := runProgressPass(ens.Jar, scope, planOpts, true)
+		if perr != nil {
+			return perr
+		}
+		pres = &presVal
+	}
+
 	if archiveJSON {
-		out, _ := json.MarshalIndent(map[string]any{
+		payload := map[string]any{
 			"root":             result.Root,
 			"courseIds":        scope,
 			"coursesScanned":   result.CoursesScanned,
@@ -392,7 +445,11 @@ func runArchiveUpdateDryRun(args []string, abs string) error {
 			"bodiesWouldFetch": result.BodiesWouldFetch,
 			"elapsedSeconds":   elapsed.Seconds(),
 			"perCourse":        result.PerCourse,
-		}, "", "  ")
+		}
+		if pres != nil {
+			payload["progress"] = pres
+		}
+		out, _ := json.MarshalIndent(payload, "", "  ")
 		fmt.Println(string(out))
 		return nil
 	}
@@ -418,7 +475,117 @@ func runArchiveUpdateDryRun(args []string, abs string) error {
 	} else {
 		fmt.Println("Re-run without --dry-run to apply.")
 	}
+	if pres != nil {
+		printArchiveProgressResult(*pres, true)
+	}
 	return nil
+}
+
+func runProgressPass(jar *cookiejar.Jar, scope []string, planOpts progress.PlanOptions, dryRun bool) (progress.BulkResult, error) {
+	uid, err := dupdata.CurrentUserID(jar)
+	if err != nil {
+		return progress.BulkResult{}, err
+	}
+	id, err := progress.ParseUserID(uid)
+	if err != nil {
+		return progress.BulkResult{}, err
+	}
+	return progress.Run(progress.BulkOptions{
+		Client:    progress.NewClient(jar, id),
+		Plan:      planOpts,
+		DryRun:    dryRun,
+		Interval:  archiveUpdateInterval,
+		CourseIDs: scope,
+		Courses: func() ([]string, error) {
+			csv, err := dupdata.CourseOrgIDsCSV(jar)
+			if err != nil {
+				return nil, err
+			}
+			out := []string{}
+			for _, id := range strings.Split(csv, ",") {
+				if id = strings.TrimSpace(id); id != "" {
+					out = append(out, id)
+				}
+			}
+			return out, nil
+		},
+	})
+}
+
+func printArchiveProgressResult(res progress.BulkResult, dry bool) {
+	if archiveJSON {
+		return
+	}
+	if archivePlain {
+		_ = tsvWriteLine(os.Stdout,
+			"courseId", "topicId", "action",
+			"visitsBefore", "visitsAfter", "completedBefore", "completedAfter",
+			"timeBefore", "timeAfter",
+		)
+		for _, ch := range res.Changes {
+			_ = tsvWriteLine(os.Stdout,
+				ch.CourseID, strconv.Itoa(ch.TopicID), ch.Action,
+				strconv.Itoa(ch.Before.NumVisits), strconv.Itoa(ch.After.NumVisits),
+				yesNo(ch.Before.Completed), yesNo(ch.After.Completed),
+				strconv.Itoa(ch.Before.TotalTime), strconv.Itoa(ch.After.TotalTime),
+			)
+		}
+		return
+	}
+
+	verb := "changed"
+	if dry {
+		verb = "would change"
+	}
+	fmt.Printf("\nProgress pass\n")
+	fmt.Printf("Topics: %d checked, %d %s", res.TopicsChecked, res.TopicsChanged, verb)
+	if !dry {
+		fmt.Printf(", %d written", res.TopicsWritten)
+	}
+	if res.TopicsFailed > 0 {
+		fmt.Printf(", %d failed", res.TopicsFailed)
+	}
+	fmt.Println()
+
+	rows := make([][]string, 0, len(res.Changes))
+	for _, ch := range res.Changes {
+		rows = append(rows, []string{
+			ch.CourseID,
+			strconv.Itoa(ch.TopicID),
+			ch.Action,
+			diffWord(strconv.Itoa(ch.Before.NumVisits), strconv.Itoa(ch.After.NumVisits)),
+			diffWord(yesNo(ch.Before.Completed), yesNo(ch.After.Completed)),
+			diffWord(humanSeconds(ch.Before.TotalTime), humanSeconds(ch.After.TotalTime)),
+		})
+	}
+	const maxRows = 20
+	if len(rows) > maxRows {
+		rows = rows[:maxRows]
+	}
+	if len(rows) > 0 {
+		out := table.Render(table.Options{
+			Headers: []string{"Course", "Topic", "Action", "Visits", "Completed", "Time"},
+			Widths: table.Widths([]table.ColumnSpec{
+				table.Fixed(8), table.Fixed(8), table.Flex(16),
+				table.Fixed(11), table.Fixed(14), table.Flex(12),
+			}, table.TerminalWidth()),
+			Rows: rows,
+		})
+		fmt.Print(out)
+		if len(res.Changes) > maxRows {
+			fmt.Printf("…and %d more (use --json or --plain for the full list)\n", len(res.Changes)-maxRows)
+		}
+	}
+	shown := len(res.Failures)
+	if shown > 10 {
+		shown = 10
+	}
+	for _, f := range res.Failures[:shown] {
+		fmt.Printf("  failed  course %s topic %d: %s\n", f.CourseID, f.TopicID, f.Error)
+	}
+	if len(res.Failures) > shown {
+		fmt.Printf("  …and %d more failures\n", len(res.Failures)-shown)
+	}
 }
 
 func printUpdateDryRunTable(result archive.DiffResult) {
