@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
 
@@ -36,10 +35,6 @@ type tokenResponse struct {
 	Scope        string `json:"scope"`
 }
 
-// xsrfFromHomeRegex pulls the XSRF token out of the inline script D2L writes
-// into every SSR page: localStorage.setItem('XSRF.Token','<value>').
-var xsrfFromHomeRegex = regexp.MustCompile(`localStorage\.setItem\(\s*'XSRF\.Token'\s*,\s*'([^']+)'\s*\)`)
-
 // mintBrightspaceToken fetches a fresh access token from D2L's OAuth2 endpoint
 // using the cookie jar of an already-authenticated D2L session. The endpoint
 // requires an X-Csrf-Token header whose value D2L renders into the home page
@@ -52,7 +47,7 @@ var xsrfFromHomeRegex = regexp.MustCompile(`localStorage\.setItem\(\s*'XSRF\.Tok
 // work fine on session cookies alone, so a missing token is non-fatal for the
 // login flow itself.
 func mintBrightspaceToken(jar *cookiejar.Jar) (*session.TokenRecord, error) {
-	xsrf, err := fetchXSRFToken(jar)
+	xsrf, err := httpclient.FetchXSRFToken(jar)
 	if err != nil {
 		return nil, fmt.Errorf("fetch xsrf: %w", err)
 	}
@@ -104,39 +99,6 @@ func mintBrightspaceToken(jar *cookiejar.Jar) (*session.TokenRecord, error) {
 	rec := session.NewTokenFromJWT(tr.AccessToken, tr.TokenType, tr.Scope, expiresAt, issuedAt)
 	rec.RefreshToken = tr.RefreshToken
 	return &rec, nil
-}
-
-// fetchXSRFToken GETs /d2l/home with the session jar and pulls the XSRF
-// token out of the inline `localStorage.setItem('XSRF.Token', ...)` script
-// that D2L writes into every SSR page. Returns "" on any failure so callers
-// can treat it as "skip token capture".
-func fetchXSRFToken(jar *cookiejar.Jar) (string, error) {
-	req, err := http.NewRequest(http.MethodGet, ua.D2LBase+"/d2l/home", nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Accept", "text/html")
-	client := &http.Client{
-		Jar:       jar,
-		Transport: httpclient.BrowserTransport(),
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	res, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = res.Body.Close() }()
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return "", err
-	}
-	m := xsrfFromHomeRegex.FindSubmatch(body)
-	if m == nil {
-		return "", fmt.Errorf("XSRF.Token not found in D2L home page")
-	}
-	return string(m[1]), nil
 }
 
 // TokenRefresher adapts the persistent-session + XSRF-token minting flow into
