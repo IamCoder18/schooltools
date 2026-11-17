@@ -7,6 +7,11 @@ type AuthError struct {
 
 func (e *AuthError) Error() string { return e.Message }
 
+// AuthCode lets callers use the same `interface{ AuthCode() string }`
+// assertion against every auth failure type, so the machine-readable
+// code always reaches the auth log instead of a per-call-site fallback.
+func (e *AuthError) AuthCode() string { return e.Code }
+
 func New(code, message string) *AuthError {
 	return &AuthError{Code: code, Message: message}
 }

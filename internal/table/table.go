@@ -14,7 +14,7 @@ type ColumnSpec struct {
 	Flex   int
 }
 
-func Fixed(n int) ColumnSpec { return ColumnSpec{Fixed: n} }
+func Fixed(n int) ColumnSpec  { return ColumnSpec{Fixed: n} }
 func Flex(min int) ColumnSpec { return ColumnSpec{Flex: min, IsFlex: true} }
 
 // Widths computes column widths matching the old cli-table3 semantics:
@@ -88,6 +88,7 @@ type Options struct {
 	Rows    [][]string
 	Widths  []int
 	Style   string // "dark" (default for TTY), "light", "notty" (default for pipes)
+	Wrap    bool   // wrap cell content to the computed widths instead of truncating
 }
 
 // Render produces a styled table using lipgloss/table directly. This avoids
@@ -143,6 +144,9 @@ func Render(opts Options) string {
 		for i := range opts.Widths {
 			opts.Widths[i] = 20
 		}
+	}
+	if opts.Wrap {
+		t.Wrap(true)
 	}
 	if total := sumWidths(opts.Widths); total > 0 {
 		t.Width(total)
