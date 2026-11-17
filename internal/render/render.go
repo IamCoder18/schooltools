@@ -432,7 +432,7 @@ func Window(startISO, endISO string) string {
 	end, hasEnd := Parse(endISO)
 	switch {
 	case hasStart && hasEnd:
-		state := "open"
+		var state string
 		switch {
 		case now.Before(start):
 			state = Warn("opens " + RelAt(start, now))

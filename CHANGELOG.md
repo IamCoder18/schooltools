@@ -46,6 +46,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   A `Retry-After` hint is capped at 60s so a hostile or broken value cannot
   stall a pass. Permanent failures (404, 400) and expired sessions are
   still not retried.
+- **PowerSchool MyCBE support (`sis` command tree).** The CBE parent/student
+  portal (https://sis.cbe.ab.ca) is now a first-class surface:
+  - `sis login` / `sis logout` — session-cookie auth against MyCBE
+  - `sis whoami` — student profile and section count
+  - `sis years` — academic-year picker
+  - `sis grades` — enrolled classes for the active year
+  - `sis grades --marks` — current T1/S1 course marks from the guardian
+    "Assignments & Grades" page
+  - `sis standards` — rubric outcomes per section
+  - `sis standard-grades` — outcome grades with proficiency codes and
+    calculated percentages
+  - `sis assignments` — posted assignments with due dates, categories,
+    scores and flags; bounded per-cell fan-out
+  - `sis scale` — the CBE High School Proficiency Scale
+  - `sis school` — per-school config
+  The `.env` file is optional for read-only commands; only login and the
+  401/403 re-auth path need credentials. Every `sis --json` payload is a
+  `count` envelope with snake_case keys.
 
 ### Changed
 - **Output overhaul across every command.** Human-readable output is now a

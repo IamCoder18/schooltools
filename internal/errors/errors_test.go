@@ -11,6 +11,7 @@ func TestAuthError(t *testing.T) {
 	e := stderrors.New("X", "msg")
 	assert.Equal(t, "X", e.Code)
 	assert.Equal(t, "msg", e.Error())
+	assert.Equal(t, "X", e.AuthCode())
 }
 
 func TestSamlConsumedError(t *testing.T) {

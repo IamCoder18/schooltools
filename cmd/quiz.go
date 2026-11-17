@@ -421,7 +421,7 @@ func fetchQuizAttemptsFor(jar *cookiejar.Jar, courseID, quizID string) ([]QuizAt
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode == 403 {
 		return nil, fmt.Errorf("D2L refused (403) — students cannot read this quiz's attempts")
 	}
@@ -564,10 +564,10 @@ func attemptsSection(ats []QuizAttempt) string {
 		if !a.Done() {
 			done = render.When(a.StartTime()) + "  " + render.Warn("in progress")
 		}
-		b.WriteString(fmt.Sprintf("  %-6s %-44s %s\n",
+		fmt.Fprintf(&b, "  %-6s %-44s %s\n",
 			fmt.Sprintf("#%d", a.AttemptNumber),
 			done,
-			score))
+			score)
 	}
 	if best := bestAttemptScore(ats); best != "" {
 		b.WriteString(render.KV(render.Row{Key: "Best", Value: render.Accent(best)}))

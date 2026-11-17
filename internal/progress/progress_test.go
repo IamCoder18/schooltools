@@ -28,10 +28,10 @@ func homePage(token string) string {
 
 func TestFetchReturnsDefaultStateRow(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/d2l/home":
+		switch r.URL.Path {
+		case "/d2l/home":
 			_, _ = w.Write([]byte(homePage("tok")))
-		case r.URL.Path == "/d2l/api/le/unstable/1522695/content/userprogress/7":
+		case "/d2l/api/le/unstable/1522695/content/userprogress/7":
 			require.Equal(t, "42", r.URL.Query().Get("userId"))
 			require.Equal(t, "tok", r.Header.Get("X-Csrf-Token"))
 			require.Equal(t, "XMLHttpRequest", r.Header.Get("X-Requested-With"))
@@ -52,10 +52,10 @@ func TestFetchReturnsDefaultStateRow(t *testing.T) {
 
 func TestUpdateSendsFullBodyWithoutIsExempt(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/d2l/home":
+		switch r.URL.Path {
+		case "/d2l/home":
 			_, _ = w.Write([]byte(homePage("tok")))
-		case r.URL.Path == "/d2l/api/le/unstable/1522695/content/userprogress/":
+		case "/d2l/api/le/unstable/1522695/content/userprogress/":
 			require.Equal(t, http.MethodPost, r.Method)
 			require.Equal(t, "application/json", r.Header.Get("Content-Type"))
 			var body map[string]any
@@ -85,14 +85,14 @@ func TestUpdateSendsFullBodyWithoutIsExempt(t *testing.T) {
 func TestUpdateRetriesWithFreshTokenOn403(t *testing.T) {
 	var homeHits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/d2l/home":
+		switch r.URL.Path {
+		case "/d2l/home":
 			tok := "tok1"
 			if homeHits.Add(1) >= 2 {
 				tok = "tok2"
 			}
 			_, _ = w.Write([]byte(homePage(tok)))
-		case r.URL.Path == "/d2l/api/le/unstable/1522695/content/userprogress/":
+		case "/d2l/api/le/unstable/1522695/content/userprogress/":
 			if r.Header.Get("X-Csrf-Token") != "tok2" {
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write([]byte(`{"Errors":[{"Message":"Forbidden"}]}`))

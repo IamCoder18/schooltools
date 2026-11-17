@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/IamCoder18/schooltools/internal/authlog"
 	"github.com/IamCoder18/schooltools/internal/httpclient"
 	"github.com/IamCoder18/schooltools/internal/login"
 )
@@ -28,6 +29,7 @@ func init() {
 	rootCmd.SilenceErrors = true
 	rootCmd.PersistentFlags().BoolVar(&noAuthLog, "no-auth-log", false, "Disable the JSONL auth log (~/.config/schooltools/auth.log)")
 	cobra.OnInitialize(func() {
+		authlog.SetEnabled(!noAuthLog)
 		httpclient.RegisterTokenRefresher(login.TokenRefresher())
 	})
 }
