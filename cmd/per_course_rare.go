@@ -327,7 +327,10 @@ func runGradeRoot() error {
 			return err
 		}
 		if gradeJSON {
-			b, _ := json.MarshalIndent(items, "", "  ")
+			b, _ := json.MarshalIndent(map[string]any{
+				"count":  len(items),
+				"grades": items,
+			}, "", "  ")
 			fmt.Println(string(b))
 			return nil
 		}
@@ -353,7 +356,10 @@ func runGradeRoot() error {
 			return err
 		}
 		if gradeJSON {
-			b, _ := json.MarshalIndent(out, "", "  ")
+			b, _ := json.MarshalIndent(map[string]any{
+				"count":  1,
+				"grades": []GradeValue{out},
+			}, "", "  ")
 			fmt.Println(string(b))
 			return nil
 		}
@@ -367,7 +373,10 @@ func runGradeRoot() error {
 		return err
 	}
 	if gradeJSON {
-		b, _ := json.MarshalIndent(items, "", "  ")
+		b, _ := json.MarshalIndent(map[string]any{
+			"count":  len(items),
+			"grades": items,
+		}, "", "  ")
 		fmt.Println(string(b))
 		return nil
 	}

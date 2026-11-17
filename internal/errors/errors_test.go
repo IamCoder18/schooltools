@@ -1,16 +1,26 @@
 package errors_test
 
 import (
+	"errors"
 	"testing"
 
 	stderrors "github.com/aarav/schooltools/internal/errors"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAuthError(t *testing.T) {
 	e := stderrors.New("X", "msg")
 	assert.Equal(t, "X", e.Code)
 	assert.Equal(t, "msg", e.Error())
+	// AuthError must satisfy the same `interface{ AuthCode() string }`
+	// assertion the other auth error types do, or call sites that extract
+	// the code for the auth log silently fall back to a generic label.
+	assert.Equal(t, "X", e.AuthCode())
+
+	var coder interface{ AuthCode() string }
+	require.True(t, errors.As(error(e), &coder))
+	assert.Equal(t, "X", coder.AuthCode())
 }
 
 func TestSamlConsumedError(t *testing.T) {

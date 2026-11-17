@@ -330,6 +330,65 @@ listing.
 
 ---
 
+## 21. `sis` PowerSchool commands may break after PS / CBE tenant upgrades
+
+**Observed:** The `sis` command tree talks to internal REST endpoints
+under `/ws/xte/…` that PowerSchool's Angular SPA uses. CBE runs PS
+21.06.339 (PDS 31.0.3); if either version bumps, the endpoint paths,
+request shapes, or response fields may change.
+
+**Expected:** A version probe at the top of every `sis` subcommand
+that surfaces a clear error like "this CLI targets PS 21.06 / PDS
+31.0.3; detected 24.x — please upgrade schooltools" when the version
+drifts.
+
+**Likely source:** `internal/ps/client.go` (hardcoded paths), plus
+the CBE customization of `doPCASLogin` that sends plaintext passwords
+— if CBE re-secures that path, every login will break until we
+re-implement the HMAC-MD5 flow.
+
+---
+
+## 22. `sis school / sis assignments` may show no rows
+
+**Observed:** `sis assignments` typically returns "No assignments
+posted yet" for grade-10 students early in a term — that's the live
+API behaviour, not a bug. `sis school` returns the full 315-school
+list (CBE's entire SIS); the student's own school is highlighted
+with `★` but there's no built-in `--school <id>` filter.
+
+**Expected:** A `--school <id>` filter on `sis school`, and for
+`sis assignments` a way to raise the `--max-cells` ceiling (the run
+aborts above the default rather than issuing unbounded live calls) or
+narrow it with `--section`.
+
+**Note:** `sis assignments` does **not** probe `store_codes`. The Neon
+SPA does not use `/ws/xte/assignment/lookup` (it returns `[]` even when
+assignments exist), so the command instead walks every
+(student, section, standard) row from `/ws/xte/standard_grade_section`
+and drills into the per-cell `/guardian/studentSectionStemAssignments.json`
+endpoint. Empty cells are dropped.
+
+**Likely source:** `cmd/sis_assignments.go`, `cmd/sis_school.go`.
+
+---
+
+## 23. `sis` session file is independent of the D2L `session.json`
+
+**Observed:** `sis login` writes to `~/.config/schooltools/sis-session.json`
+and `login` writes to `~/.config/schooltools/session.json`. They use
+the same JSON cookie schema but the cookie *names* are different
+(`psaid` / `currentSchool` / `current_locale` vs. `d2lSessionVal` /
+`d2lSecureSessionVal`). Running `schooltools logout` clears only the
+D2L session — the SIS session is preserved until `schooltools sis logout`.
+
+**Expected:** Document the dual-session model in `README.md` (or a
+top-level `schooltools sis logout --all` that clears both).
+
+**Likely source:** `cmd/sis_logout.go`, README.
+
+---
+
 ## Quick-fix priority suggestion
 
 If only a few of these get fixed, the highest-impact ones for a CLI
@@ -340,3 +399,5 @@ user pulling real files out of D2L are:
   trust `archive list`
 - **#11 / #12** — stable JSON shape + file extensions in tree view
 - **#13 / #14** — honest session/token status reporting
+- **#21** — add a PS version probe so the `sis` commands fail loudly
+  (not silently with empty rows) when the tenant is upgraded

@@ -66,6 +66,7 @@ Read [`README.md`](./README.md) before making changes. Read
 | Terminal UI helpers | `internal/ui/`, `internal/table/`, `internal/tree/` |
 | systemd units | `internal/systemd/` and the `.tmpl` files under `internal/systemd/units/` |
 | The CLI version string | `cmd/root.go` (`rootCmd.Version`) |
+| The PowerSchool SIS client | `internal/ps/` (mirrors `internal/login` layout) |
 | The CHANGELOG | `CHANGELOG.md` (Keep a Changelog format) |
 
 ---

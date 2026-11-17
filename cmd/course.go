@@ -271,8 +271,9 @@ func printCourses(courses []d2lCourse) {
 	}
 	out := table.Render(table.Options{
 		Headers: []string{"ID", "Active", "Start", "End", "Semester", "Code", "Name"},
-		Widths:  table.Widths([]table.ColumnSpec{table.Fixed(8), table.Fixed(6), table.Fixed(10), table.Fixed(10), table.Fixed(22), table.Flex(20), table.Flex(24)}, table.TerminalWidth()),
+		Widths:  table.Widths([]table.ColumnSpec{table.Fixed(8), table.Fixed(6), table.Fixed(10), table.Fixed(10), table.Flex(12), table.Flex(14), table.Flex(14)}, table.TerminalWidth()),
 		Rows:    rows,
+		Wrap:    true,
 	})
 	fmt.Print(out)
 }

@@ -76,6 +76,24 @@ type Submission struct {
 	SubmittedText string `json:"SubmittedText"`
 }
 
+// isPlaceholderSubmission reports whether the submissions endpoint
+// returned an all-zero stub row. Some D2L tenants emit one instead of an
+// empty array when the caller has not submitted, and surfacing it as a
+// real submission would be wrong.
+func isPlaceholderSubmission(s Submission) bool {
+	return s.Id == 0 && s.FolderId == 0 && s.EntityId == 0 && s.SubmittedDate == "" && s.SubmittedText == ""
+}
+
+func realSubmissions(items []Submission) []Submission {
+	out := make([]Submission, 0, len(items))
+	for _, s := range items {
+		if !isPlaceholderSubmission(s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // Feedback is the envelope returned for /feedback/<type>/<id>.
 type Feedback struct {
 	Score            json.Number `json:"Score"`
@@ -303,8 +321,17 @@ func runAssignmentSubmissions(folderID string) error {
 		// 403 means the user has not submitted to this folder, so there
 		// are no submissions to list. Print a friendly message rather
 		// than surfacing the raw error.
-		fmt.Println("No submissions for this folder (you have not submitted yet).")
 		_ = res.Body.Close()
+		if asgJSON {
+			b, _ := json.MarshalIndent(map[string]any{
+				"count":       0,
+				"submissions": []Submission{},
+				"note":        "no submission",
+			}, "", "  ")
+			fmt.Println(string(b))
+			return nil
+		}
+		fmt.Println("No submissions for this folder (you have not submitted yet).")
 		return nil
 	}
 	if res.StatusCode != 200 {
@@ -317,8 +344,12 @@ func runAssignmentSubmissions(folderID string) error {
 		return err
 	}
 	_ = res.Body.Close()
+	items = realSubmissions(items)
 	if asgJSON {
-		b, _ := json.MarshalIndent(items, "", "  ")
+		b, _ := json.MarshalIndent(map[string]any{
+			"count":       len(items),
+			"submissions": items,
+		}, "", "  ")
 		fmt.Println(string(b))
 		return nil
 	}
