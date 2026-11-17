@@ -66,6 +66,7 @@ type Standard struct {
 	IsExcluded          bool   `json:"isexcludedfromreports"`
 	IsAssignmentAllowed bool   `json:"isassignmentallowed"`
 	MaxCommentLength    int    `json:"maxcommentlength"`
+	SectionDCID         int64  `json:"sectiondcid"`
 }
 
 // StandardGrade is one (student × section × standard) row, returned
@@ -111,24 +112,21 @@ type SchoolCommentLimit struct {
 // because PowerSchool's legacy JSON emits everything as string —
 // coerce to int at the consumer.
 type StemAssignment struct {
-	DCID               string   `json:"dcid"`
-	StudentID          string   `json:"studentid"`
-	SectionDCID        string   `json:"sectionDcid"`
-	StandardID         string   `json:"standardId"`
-	AssignmentID       string   `json:"assignmentId"`
-	AssignmentName     string   `json:"assignmentName"`
-	Category           string   `json:"category"`
-	DueDate            string   `json:"dueDate"`
-	ActualScoreEntered string   `json:"actualScoreEntered"`
-	IsCollected        string   `json:"isCollected"`
-	IsLate             string   `json:"isLate"`
-	IsMissing          string   `json:"isMissing"`
-	IsExempt           string   `json:"isExempt"`
-	IsAbsent           string   `json:"isAbsent"`
-	IsIncomplete       string   `json:"isIncomplete"`
-	Percent            *float64 `json:"percent,omitempty"`
-	Score              *float64 `json:"score,omitempty"`
-	ScorePossible      *float64 `json:"scorepossible,omitempty"`
+	DCID               string `json:"dcid"`
+	StudentID          string `json:"studentid"`
+	SectionDCID        string `json:"sectionDcid"`
+	StandardID         string `json:"standardId"`
+	AssignmentID       string `json:"assignmentId"`
+	AssignmentName     string `json:"assignmentName"`
+	Category           string `json:"category"`
+	DueDate            string `json:"dueDate"`
+	ActualScoreEntered string `json:"actualScoreEntered"`
+	IsCollected        string `json:"isCollected"`
+	IsLate             string `json:"isLate"`
+	IsMissing          string `json:"isMissing"`
+	IsExempt           string `json:"isExempt"`
+	IsAbsent           string `json:"isAbsent"`
+	IsIncomplete       string `json:"isIncomplete"`
 }
 
 // StemAssignmentsResponse is the wrapper around the array of per-cell

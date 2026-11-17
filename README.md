@@ -335,7 +335,7 @@ schooltools sis login              # sign in to MyCBE (saves to ~/.config/school
 schooltools sis whoami             # student profile + section count
 schooltools sis years              # year picker
 schooltools sis grades             # every enrolled section for the active year
-schooltools sis grades --marks     # current T1/S1 course marks, as the portal shows them
+schooltools sis grades --marks     # course marks for every reporting term (T1, T2, S1, …)
 schooltools sis standards          # standards (rubric items) per section
 schooltools sis standard-grades    # outcome grades + calculated percentages
 schooltools sis assignments        # posted assignments (often empty early in a term)
@@ -345,8 +345,9 @@ schooltools sis logout             # clear the SIS session
 ```
 
 The `.env` file is required only when credentials are actually needed:
-`sis login` and the automatic 401/403 re-auth path. Every read-only
-subcommand works from the saved session alone, so `sis whoami`,
+`sis login` and any automatic re-authentication (when the saved session
+is missing or the portal returns 401/403). Every read-only subcommand
+works from the saved session alone, so `sis whoami`,
 `sis grades --marks` and friends run fine in a directory without an
 `.env`.
 
@@ -372,11 +373,12 @@ follows the browser's flow:
 Redirects that leave the portal's origin are refused.
 
 `--auto-refresh` (on by default) re-authenticates when the saved
-session is missing; pass `--auto-refresh=false` to make `sis logout`
-sticky. A `sis` command that gets a 401/403 from the portal also
-re-authenticates once and retries, because PowerSchool issues
-`psaid`/`JSESSIONID` without an `Expires` and a server-side revocation
-is invisible to the local expiry check.
+session is missing. To keep a logout sticky, pass
+`--auto-refresh=false` to each subsequent command. A `sis` command
+that gets a 401/403 from the portal also re-authenticates once and
+retries, because PowerSchool issues `psaid`/`JSESSIONID` without an
+`Expires` and a server-side revocation is invisible to the local expiry
+check.
 
 Set `SIS_DCID=<student DCID>` in `.env` to skip the credentials-link scrape
 that `sis whoami` uses to discover the internal DCID. `sis assignments`

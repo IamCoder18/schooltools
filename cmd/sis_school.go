@@ -44,12 +44,6 @@ var sisSchoolCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		limits, err := client.GetSchoolCommentLimits()
-		if err != nil {
-			return err
-		}
-		schoolRows := sisSchoolLimitRows(limits)
-		// Find the row that matches the logged-in student's school.
 		dcid, err := resolveStudentDCID(client)
 		if err != nil {
 			return err
@@ -63,6 +57,12 @@ var sisSchoolCmd = &cobra.Command{
 			return err
 		}
 		studentSchool := stu.SchoolID
+
+		limits, err := client.GetSchoolCommentLimits()
+		if err != nil {
+			return err
+		}
+		schoolRows := sisSchoolLimitRows(limits)
 
 		if asJSON {
 			out := map[string]any{

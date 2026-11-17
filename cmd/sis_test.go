@@ -13,9 +13,9 @@ import (
 	"github.com/IamCoder18/schooltools/internal/ps"
 )
 
-// newYearClient returns a ps.Client whose year picker serves the given
-// years, so resolveYearID can be exercised without a live portal.
-func newYearClient(t *testing.T, years []ps.Year) *ps.Client {
+// newYearClient returns a ps.Client whose year picker serves a fixed
+// fixture, so resolveYearID can be exercised without a live portal.
+func newYearClient(t *testing.T) *ps.Client {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/xte/standard_grade_section/student/years", func(w http.ResponseWriter, r *http.Request) {
@@ -35,7 +35,7 @@ func newYearClient(t *testing.T, years []ps.Year) *ps.Client {
 // come from the picker, never from a hardcoded constant, and must be the
 // newest available.
 func TestResolveYearIDPicksNewest(t *testing.T) {
-	c := newYearClient(t, nil)
+	c := newYearClient(t)
 	got, err := resolveYearID(c, 90000001, 0)
 	require.NoError(t, err)
 	assert.Equal(t, 36, got)
@@ -43,7 +43,7 @@ func TestResolveYearIDPicksNewest(t *testing.T) {
 
 // TestResolveYearIDOverride asserts an explicit --year wins.
 func TestResolveYearIDOverride(t *testing.T) {
-	c := newYearClient(t, nil)
+	c := newYearClient(t)
 	got, err := resolveYearID(c, 90000001, 34)
 	require.NoError(t, err)
 	assert.Equal(t, 34, got)
@@ -93,6 +93,7 @@ func TestResolveYearIDUnorderedPicker(t *testing.T) {
 // TestResolveStudentDCIDParsesDashboard asserts the credentials-link
 // scrape still resolves the DCID from a real dashboard body.
 func TestResolveStudentDCIDParsesDashboard(t *testing.T) {
+	t.Setenv("SIS_DCID", "")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/guardian/home.html", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`<html><body><a href="/guardian/credentials.html?frn=00190000001">me</a></body></html>`))
@@ -114,6 +115,7 @@ func TestResolveStudentDCIDParsesDashboard(t *testing.T) {
 // the guardian dashboard is reported as an expired session rather than
 // an opaque "could not parse DCID" message.
 func TestResolveStudentDCIDReportsStaleSession(t *testing.T) {
+	t.Setenv("SIS_DCID", "")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/guardian/home.html", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`<html><body>please sign in</body></html>`))

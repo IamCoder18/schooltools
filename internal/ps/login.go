@@ -14,10 +14,7 @@ import (
 
 // LoginOptions configures a PowerSchool login.
 type LoginOptions struct {
-	// Account is the student number. MyCBE login takes a student ID,
-	// not an email.
-	Account string
-	// Password is the cleartext MyCBE password.
+	Account  string
 	Password string
 }
 
@@ -42,14 +39,12 @@ func Login(opts LoginOptions) ([]cookies.Record, error) {
 		return nil, err
 	}
 
-	// Step 1: seed JSESSIONID.
 	if _, err := httpclient.Fetch(BaseURL+PublicPath, jar, httpclient.FetchOptions{
 		Referer: BaseURL + PublicPath,
 	}); err != nil {
 		return nil, fmt.Errorf("GET %s failed: %w", PublicPath, err)
 	}
 
-	// Step 2: form POST.
 	form := url.Values{}
 	form.Set("account", opts.Account)
 	form.Set("pw", opts.Password)
@@ -65,13 +60,6 @@ func Login(opts LoginOptions) ([]cookies.Record, error) {
 	form.Set("serviceTicket", "")
 	form.Set("translatorpw", "")
 
-	// PowerSchool's login form is fine with a minimal curl-like header
-	// set; the heavy Sec-Fetch-* / Origin browser chrome sometimes trips
-	// the upstream JSESSIONID check (CBE rotates the JSESSIONID on a
-	// 302 and uses both the seeded and the rotated value; some header
-	// combos cause the rotation to be skipped, returning the login page
-	// again). Match what curl sends and what the browser sends, then
-	// hand off the rest of the work to the client.
 	res, err := httpclient.Fetch(BaseURL+LoginPath, jar, httpclient.FetchOptions{
 		Method:  http.MethodPost,
 		Referer: BaseURL + PublicPath,
@@ -85,13 +73,8 @@ func Login(opts LoginOptions) ([]cookies.Record, error) {
 		return nil, fmt.Errorf("POST %s failed: %w", LoginPath, err)
 	}
 
-	// Step 3: interpret the response. Bad creds → 200 with "Invalid Username
-	// or Password!" inline. Good creds → 302 to /guardian/home.html. The
-	// 302 itself sets JSESSIONID (rotated) + psaid + currentSchool +
-	// current_locale — we want the rotated JSESSIONID, not the seeded one.
 	switch res.StatusCode {
 	case http.StatusOK:
-		// Could be a bad-creds response or an immediate success (rare).
 		body, _ := httpclient.BodyString(res)
 		if isInvalidCreds(body) {
 			return nil, stderrors.New("INVALID_CREDS", "PowerSchool rejected the credentials (Invalid Username or Password!)")
@@ -100,9 +83,6 @@ func Login(opts LoginOptions) ([]cookies.Record, error) {
 			return nil, stderrors.New("UNEXPECTED_OK", "login POST returned 200 with the public login form instead of a guardian page; the portal did not accept the session")
 		}
 	case http.StatusFound, http.StatusMovedPermanently, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
-		// 302 path: follow the redirect manually so the cookie jar sees the
-		// Set-Cookie headers from BOTH the redirect response and the GET
-		// that follows.
 		loc, err := res.Location()
 		if err != nil {
 			return nil, fmt.Errorf("302 had no usable Location: %w", err)
@@ -148,9 +128,6 @@ func allPSCookies(jar *cookiejar.Jar) []cookies.Record {
 	if jar == nil {
 		return nil
 	}
-	// Login only ever contacts BaseURL's origin — redirects are rejected
-	// off-host by safeRedirectTarget — so the jar holds no cookies for any
-	// other host and a single lookup is exhaustive.
 	host := BaseURLHost()
 	if host == "" {
 		return nil
@@ -237,12 +214,30 @@ func safeRedirectTarget(loc *url.URL) (string, error) {
 	if loc.Scheme != "" && loc.Scheme != want {
 		return "", stderrors.New("LOGIN_FOLLOW_FAILED", fmt.Sprintf("refusing to follow a redirect that downgrades %s to %s", want, loc.Scheme))
 	}
-	// Compare host:port, not hostname alone, so a redirect to a different
-	// port on the same host is still treated as a different origin.
-	if h := loc.Host; h != "" && h != BaseURLHost() {
+	if h := loc.Host; h != "" && normalizeHostPort(h, want) != normalizeHostPort(BaseURLHost(), want) {
 		return "", stderrors.New("LOGIN_FOLLOW_FAILED", fmt.Sprintf("refusing to follow a redirect off the PowerSchool origin (host %q)", h))
 	}
 	return loc.String(), nil
+}
+
+// normalizeHostPort strips an explicit default port for the scheme so
+// "sis.cbe.ab.ca:443" and "sis.cbe.ab.ca" compare equal.
+func normalizeHostPort(host, scheme string) string {
+	if host == "" {
+		return host
+	}
+	u, err := url.Parse("//" + host)
+	if err != nil {
+		return host
+	}
+	port := u.Port()
+	if port == "" {
+		return host
+	}
+	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
+		return u.Hostname()
+	}
+	return host
 }
 
 // redirectPath renders the safe-to-log portion of a redirect URL: the
@@ -259,13 +254,8 @@ func redirectPath(loc *url.URL) string {
 
 // EnsureSessionOptions configures EnsureSession.
 type EnsureSessionOptions struct {
-	// AutoRefresh gates re-authentication. When false and the saved
-	// session is missing or invalid, EnsureSession returns an error
-	// instead of logging in, so `sis logout` stays sticky.
 	AutoRefresh bool
-	// LoginFn re-authenticates and returns the fresh cookie set. It is
-	// consulted only when AutoRefresh is true.
-	LoginFn func() ([]cookies.Record, error)
+	LoginFn     func() ([]cookies.Record, error)
 }
 
 // EnsureSession loads the saved PS cookies, returning a ready jar. If

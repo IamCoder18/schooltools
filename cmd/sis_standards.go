@@ -18,6 +18,7 @@ var (
 // sisStandardRow is the flattened JSON shape for one rubric outcome.
 type sisStandardRow struct {
 	StandardID          int64  `json:"standard_id"`
+	SectionDCID         int64  `json:"section_dcid"`
 	Name                string `json:"name"`
 	Identifier          string `json:"identifier,omitempty"`
 	Description         string `json:"description,omitempty"`
@@ -29,11 +30,12 @@ type sisStandardRow struct {
 	MaxCommentLength    int    `json:"max_comment_length"`
 }
 
-func sisStandardRows(stds []ps.Standard) []sisStandardRow {
+func sisStandardRows(stds []ps.Standard, sectionDCID int64) []sisStandardRow {
 	out := make([]sisStandardRow, 0, len(stds))
 	for _, s := range stds {
 		out = append(out, sisStandardRow{
 			StandardID:          s.ID,
+			SectionDCID:         sectionDCID,
 			Name:                s.Name,
 			Identifier:          s.Identifier,
 			Description:         s.Description,
@@ -74,30 +76,44 @@ var sisStandardsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		sectionIDs := make([]int64, len(stu.Enrollments))
-		for i, e := range stu.Enrollments {
-			sectionIDs[i] = e.SectionDCID
-		}
-		if len(sectionIDs) == 0 {
+		if len(stu.Enrollments) == 0 {
 			return fmt.Errorf("no enrollments for school year %d; pass --year <id> to select a different year", yearID)
 		}
-		stds, err := client.GetStandards(sectionIDs)
-		if err != nil {
-			return err
+
+		var rows []sisStandardRow
+		seen := map[string]bool{}
+		for _, e := range stu.Enrollments {
+			stds, err := client.GetStandards([]int64{e.SectionDCID})
+			if err != nil {
+				return err
+			}
+			for _, r := range sisStandardRows(stds, e.SectionDCID) {
+				key := fmt.Sprintf("%d/%d", r.SectionDCID, r.StandardID)
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				rows = append(rows, r)
+			}
 		}
-		rows := sisStandardRows(stds)
 
 		if asJSON {
-			out := map[string]any{"count": len(rows), "year_id": yearID, "standards": rows}
+			out := map[string]any{
+				"count":         len(rows),
+				"year_id":       yearID,
+				"section_count": len(stu.Enrollments),
+				"standards":     rows,
+			}
 			b, _ := json.MarshalIndent(out, "", "  ")
 			fmt.Println(string(b))
 			return nil
 		}
-		fmt.Fprintf(os.Stderr, "Found %d standard(s) across %d section(s) (year %d)\n", len(rows), len(sectionIDs), yearID)
+		fmt.Fprintf(os.Stderr, "Found %d standard(s) across %d section(s) (year %d)\n", len(rows), len(stu.Enrollments), yearID)
 		tableRows := make([][]string, len(rows))
 		for i, s := range rows {
 			tableRows[i] = []string{
 				fmt.Sprintf("%d", s.StandardID),
+				fmt.Sprintf("%d", s.SectionDCID),
 				s.SubjectArea,
 				s.Identifier,
 				s.Name,
@@ -105,11 +121,15 @@ var sisStandardsCmd = &cobra.Command{
 			}
 		}
 		fmt.Print(table.Render(table.Options{
-			Headers: []string{"ID", "Subject", "Identifier", "Name", "Year"},
+			Headers: []string{"ID", "Section", "Subject", "Identifier", "Name", "Year"},
 			Widths: table.Widths(
-				[]table.ColumnSpec{table.Fixed(8), table.Fixed(12), table.Fixed(16), table.Flex(30), table.Fixed(6)},
+				[]table.ColumnSpec{
+					table.Fixed(8), table.Fixed(10), table.Fixed(10),
+					table.Fixed(16), table.Flex(30), table.Fixed(6),
+				},
 				table.TerminalWidth()),
 			Rows: tableRows,
+			Wrap: true,
 		}))
 		return nil
 	},

@@ -61,10 +61,11 @@ func (c *Client) GetCourseMarks() ([]CourseMark, error) {
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		if isSigninRedirect(res) {
+			_ = res.Body.Close()
 			return nil, sessionStaleError(fmt.Sprintf("HTTP %d", res.StatusCode))
 		}
-		hint := errorHint(res)
-		return nil, fmt.Errorf("GET %s: HTTP %d %s%s", redactedURL(rawURL), res.StatusCode, res.Status, hint)
+		_ = res.Body.Close()
+		return nil, statusError(http.MethodGet, rawURL, res)
 	}
 	defer func() { _ = res.Body.Close() }()
 	body, err := httpclient.BodyString(res)

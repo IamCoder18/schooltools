@@ -3,6 +3,7 @@ package ps
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -70,7 +71,8 @@ func (c *Client) reauthFn() func() (*cookiejar.Jar, error) {
 // than each starting their own login. The returned bool is false when no
 // reauth hook is installed.
 func (c *Client) refreshOnce() (*cookiejar.Jar, error, bool) {
-	if c.reauthFn() == nil {
+	hook := c.reauthFn()
+	if hook == nil {
 		return nil, nil, false
 	}
 
@@ -80,7 +82,7 @@ func (c *Client) refreshOnce() (*cookiejar.Jar, error, bool) {
 		return c.refreshJar, c.refreshErr, true
 	}
 	c.refreshed = true
-	jar, err := c.reauthFn()()
+	jar, err := hook()
 	c.refreshJar, c.refreshErr = jar, err
 	return jar, err, true
 }
@@ -120,16 +122,34 @@ func (c *Client) fetchJSON(method, rawURL string, body any, out any) error {
 		return err
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		hint := errorHint(res)
-		return fmt.Errorf("%s %s: HTTP %d %s%s", method, redactedURL(rawURL), res.StatusCode, res.Status, hint)
+		if isSigninRedirect(res) {
+			_ = res.Body.Close()
+			return sessionStaleError(fmt.Sprintf("HTTP %d", res.StatusCode))
+		}
+		_ = res.Body.Close()
+		return statusError(method, rawURL, res)
 	}
 	if out == nil {
 		_ = res.Body.Close()
 		return nil
 	}
 	defer func() { _ = res.Body.Close() }()
-	if err := json.NewDecoder(res.Body).Decode(out); err != nil {
-		return fmt.Errorf("%s %s: decode JSON: %w", method, redactedURL(rawURL), err)
+	raw, err := io.ReadAll(res.Body)
+	if err != nil {
+		return fmt.Errorf("%s %s: read body: %v", method, redactedURL(rawURL), err)
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return nil
+	}
+	if !json.Valid([]byte(trimmed)) {
+		if isLoginPage(trimmed) {
+			return sessionStaleError(fmt.Sprintf("%d-byte non-JSON response", len(raw)))
+		}
+		return fmt.Errorf("%s %s: decode JSON: invalid JSON response", method, redactedURL(rawURL))
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("%s %s: decode JSON: %v", method, redactedURL(rawURL), err)
 	}
 	return nil
 }
@@ -190,7 +210,7 @@ func (c *Client) do(method, rawURL string, body any, accept, referer string) (*h
 		Referer: referer,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("%s %s: %w", method, redactedURL(rawURL), err)
+		return nil, fmt.Errorf("%s %s: %s", method, redactedURL(rawURL), sanitizeTransportError(err))
 	}
 	return res, nil
 }
@@ -206,48 +226,26 @@ func bodyString(r io.Reader) string {
 	return string(b)
 }
 
-// errorHint distils a PowerSchool error body into a short, non-identifying
-// hint. JSON error envelopes expose a code/message pair; anything else is
-// reduced to "<N bytes>" so no response content reaches a log.
-func errorHint(res *http.Response) string {
-	if res == nil || res.Body == nil {
-		return ""
-	}
-	defer func() { _ = res.Body.Close() }()
-	buf := make([]byte, 4096)
-	n, _ := io.ReadFull(res.Body, buf)
-	if n == 0 {
-		return ""
-	}
-	raw := buf[:n]
-	var envelope struct {
-		Code    any    `json:"code"`
-		Message string `json:"message"`
-		Msg     string `json:"msg"`
-		Error   string `json:"error"`
-	}
-	if err := json.Unmarshal(raw, &envelope); err == nil {
-		for _, candidate := range []string{envelope.Message, envelope.Msg, envelope.Error} {
-			if candidate = strings.TrimSpace(candidate); candidate != "" && isPrintableASCII(candidate) {
-				return ": " + truncate(candidate, 120)
-			}
-		}
-		if code := fmt.Sprint(envelope.Code); code != "" && code != "<nil>" && isPrintableASCII(code) {
-			return ": " + truncate(code, 40)
-		}
-	}
-	return fmt.Sprintf(" (%d bytes of non-JSON response omitted)", n)
+// statusError renders a non-2xx response without the body. PowerSchool
+// error pages can echo student identifiers, so only the status line is
+// included.
+func statusError(method, rawURL string, res *http.Response) error {
+	return fmt.Errorf("%s %s: HTTP %s", method, redactedURL(rawURL), res.Status)
 }
 
-// isPrintableASCII rejects control characters and non-ASCII runes so a
-// message cannot smuggle terminal escapes into the output.
-func isPrintableASCII(s string) bool {
-	for _, r := range s {
-		if r < 0x20 || r > 0x7e {
-			return false
-		}
+// sanitizeTransportError strips the URL from a *url.Error so connection
+// failures do not leak query parameters such as student_id.
+func sanitizeTransportError(err error) string {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Op + ": " + ue.Err.Error()
 	}
-	return true
+	return err.Error()
+}
+
+func isLoginPage(body string) bool {
+	lower := strings.ToLower(body)
+	return strings.Contains(lower, "login") || strings.Contains(lower, "sign in") || strings.Contains(lower, "dopcaslogin")
 }
 
 func truncate(s string, n int) string {

@@ -421,7 +421,7 @@ func fetchQuizAttemptsFor(jar *cookiejar.Jar, courseID, quizID string) ([]QuizAt
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode == 403 {
 		return nil, fmt.Errorf("D2L refused (403) — students cannot read this quiz's attempts")
 	}

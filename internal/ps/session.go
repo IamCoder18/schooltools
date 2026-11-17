@@ -43,7 +43,11 @@ func Save(records []cookies.Record) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(SessionPath(), data, 0o600)
+	path := SessionPath()
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }
 
 // Load returns the persisted PowerSchool cookies. Session cookies

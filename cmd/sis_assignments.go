@@ -73,6 +73,7 @@ type sisCell struct {
 func fetchStemCells(client *ps.Client, studentID int64, cells []sisCell) ([]sisAssignment, map[sisCell]error) {
 	failures := make(map[sisCell]error)
 	results := make([][]sisAssignment, len(cells))
+	var failMu sync.Mutex
 
 	work := make(chan int)
 	var wg sync.WaitGroup
@@ -84,7 +85,9 @@ func fetchStemCells(client *ps.Client, studentID int64, cells []sisCell) ([]sisA
 				c := cells[i]
 				cell, err := client.GetStemAssignment(studentID, c.sectionDCID, c.standardID)
 				if err != nil {
+					failMu.Lock()
 					failures[c] = err
+					failMu.Unlock()
 					continue
 				}
 				results[i] = stemRows(cell.Data)

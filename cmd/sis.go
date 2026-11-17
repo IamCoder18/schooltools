@@ -14,11 +14,6 @@ import (
 	"github.com/IamCoder18/schooltools/internal/ps"
 )
 
-// sisCmd is the parent for every PowerSchool MyCBE subcommand. All
-// subcommands share the same on-disk SIS session at
-// ~/.config/schooltools/sis-session.json, which is independent of the
-// D2L session.json — the two systems use different cookie sets and
-// expiries.
 var sisCmd = &cobra.Command{
 	Use:   "sis",
 	Short: "PowerSchool MyCBE parent/student portal (sis.cbe.ab.ca)",
@@ -48,10 +43,6 @@ func init() {
 	rootCmd.AddCommand(sisCmd)
 }
 
-// loadEnvOptional loads the .env file if it exists. A missing file is
-// not fatal: every read-only `sis` subcommand works from the saved
-// session, and only `sis login` (and the 401/403 re-auth path) actually
-// needs credentials. Any other load error is returned.
 func loadEnvOptional(envFile string) error {
 	if err := env.LoadEnv(envFile); err != nil && !goerrors.Is(err, fs.ErrNotExist) {
 		return err
@@ -59,15 +50,6 @@ func loadEnvOptional(envFile string) error {
 	return nil
 }
 
-// sisClient builds a PowerSchool client for a subcommand, honouring
-// --auto-refresh and wiring the 401/403 re-auth hook.
-//
-// Every `sis` subcommand goes through here so the session policy is
-// defined in exactly one place. On the valid-session path no login
-// runs; when the portal later answers 401/403 the hook re-authenticates
-// once and retries, which is the only way to recover a session that
-// PowerSchool revoked server-side (psaid carries no Expires, so the
-// local check never notices).
 func sisClient(cmd *cobra.Command) (*ps.Client, error) {
 	envFile, _ := cmd.Flags().GetString("env-file")
 	autoRefresh, _ := cmd.Flags().GetBool("auto-refresh")
@@ -95,10 +77,6 @@ func sisClient(cmd *cobra.Command) (*ps.Client, error) {
 	return client, nil
 }
 
-// resolveYearID returns the school year to query. A non-zero override
-// wins; otherwise the newest year from the portal's year picker is
-// used. Every `sis` subcommand funnels through this so they cannot
-// disagree about which year they are reporting.
 func resolveYearID(client *ps.Client, dcid int64, override int) (int, error) {
 	if override != 0 {
 		return override, nil
@@ -119,14 +97,6 @@ func resolveYearID(client *ps.Client, dcid int64, override int) (int, error) {
 	return latest, nil
 }
 
-// sisLoginRunner is the dependency-injected login function used by
-// every authenticated `sis` subcommand, and by `sis login` itself. It
-// lives in cmd so internal/ps doesn't import internal/env /
-// internal/authlog.
-//
-// It logs the attempt and its outcome; persisting the resulting session
-// is the caller's job, because the auto-refresh path persists through
-// ps.Reauthenticate.
 func sisLoginRunner(envFile string) ([]cookies.Record, error) {
 	if err := env.LoadEnv(envFile); err != nil {
 		return nil, err
@@ -148,10 +118,6 @@ func sisLoginRunner(envFile string) ([]cookies.Record, error) {
 	return records, nil
 }
 
-// logSISLoginFailure records a failed PowerSchool login using the
-// error's machine-readable code. *errors.AuthError carries a Code that
-// nothing but this assertion exposes, so it must unwrap rather than
-// type-assert directly.
 func logSISLoginFailure(err error) {
 	code := "PS_LOGIN_ERROR"
 	var coder interface{ AuthCode() string }

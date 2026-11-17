@@ -128,6 +128,9 @@ func runSISGradesMarks(client *ps.Client, asJSON bool) error {
 	if err != nil {
 		return err
 	}
+	if marks == nil {
+		marks = []ps.CourseMark{}
+	}
 	if asJSON {
 		out := map[string]any{"count": len(marks), "courses": marks}
 		b, _ := json.MarshalIndent(out, "", "  ")

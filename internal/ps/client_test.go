@@ -161,10 +161,11 @@ func TestClientSurfacesNon2xx(t *testing.T) {
 	assert.NotContains(t, err.Error(), "No access to student_id")
 	assert.NotContains(t, err.Error(), bodyID)
 	// The query string carries the student DCID and is redacted too.
-	assert.NotContains(t, err.Error(), "student/1/enrollments?year_id")
+	assert.NotContains(t, err.Error(), "?status=")
+	assert.NotContains(t, err.Error(), "year_id=")
 }
 
-func TestClientNon2xxSurfacesJSONErrorHint(t *testing.T) {
+func TestClientNon2xxOmitsResponseBody(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/xte/student/1/enrollments", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
@@ -180,7 +181,7 @@ func TestClientNon2xxSurfacesJSONErrorHint(t *testing.T) {
 	_, err := c.GetEnrollments(1, 36)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "HTTP 400")
-	assert.Contains(t, err.Error(), "student has no enrollments")
+	assert.NotContains(t, err.Error(), "student has no enrollments")
 }
 
 func TestClientRejectsBadJSON(t *testing.T) {
@@ -404,6 +405,9 @@ func TestClientCollapsesConcurrentRefresh(t *testing.T) {
 	}
 	wg.Wait()
 
+	for i, err := range errs {
+		require.NoError(t, err, "caller %d", i)
+	}
 	assert.Equal(t, int32(1), atomic.LoadInt32(&reauths),
 		"a concurrent burst of 401s must trigger exactly one re-authentication")
 }

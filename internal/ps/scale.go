@@ -50,6 +50,10 @@ func LookupProficiency(code string) (Proficiency, bool) {
 	}
 	for _, p := range proficiencyScale {
 		if p.Code == needle {
+			if p.Percent != nil {
+				v := *p.Percent
+				p.Percent = &v
+			}
 			return p, true
 		}
 	}

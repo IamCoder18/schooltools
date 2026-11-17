@@ -41,6 +41,7 @@ var sisWhoamiCmd = &cobra.Command{
 
 		if asJSON {
 			out := map[string]any{
+				"count":       1,
 				"dcid":        stu.DCID,
 				"id":          stu.ID,
 				"person_id":   stu.PersonID,

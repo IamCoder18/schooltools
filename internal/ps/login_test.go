@@ -23,7 +23,7 @@ func TestLoginHappyPath(t *testing.T) {
 	var srvLoopback string
 	mux := http.NewServeMux()
 	mux.HandleFunc("/public/", func(w http.ResponseWriter, r *http.Request) {
-		http.SetCookie(w, &http.Cookie{Name: "JSESSIONID", Value: "SEEDJS", Path: "/", Secure: true, HttpOnly: true})
+		http.SetCookie(w, &http.Cookie{Name: "JSESSIONID", Value: "SEEDJS", Path: "/"})
 		_, _ = w.Write([]byte("<html>login page</html>"))
 	})
 	mux.HandleFunc("/guardian/home.html", func(w http.ResponseWriter, r *http.Request) {
@@ -42,10 +42,10 @@ func TestLoginHappyPath(t *testing.T) {
 		postedForm = r.URL.Query()
 		_ = r.ParseForm()
 		postedForm = r.PostForm
-		http.SetCookie(w, &http.Cookie{Name: "JSESSIONID", Value: "ROTATEDJS", Path: "/", Secure: true, HttpOnly: true})
-		http.SetCookie(w, &http.Cookie{Name: "psaid", Value: "PSAIDVAL", Path: "/", Secure: true, HttpOnly: true})
-		http.SetCookie(w, &http.Cookie{Name: "currentSchool", Value: "816", Path: "/", Secure: true, HttpOnly: true})
-		http.SetCookie(w, &http.Cookie{Name: "current_locale", Value: "en_US", Path: "/", Secure: true, HttpOnly: true})
+		http.SetCookie(w, &http.Cookie{Name: "JSESSIONID", Value: "ROTATEDJS", Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: "psaid", Value: "PSAIDVAL", Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: "currentSchool", Value: "816", Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: "current_locale", Value: "en_US", Path: "/"})
 		w.Header().Set("Location", srvLoopback+"/guardian/home.html")
 		w.WriteHeader(http.StatusFound)
 	})
@@ -212,7 +212,7 @@ func TestInvalidCredsBannerVariants(t *testing.T) {
 					return
 				}
 				for _, c := range []string{"psaid", "JSESSIONID"} {
-					http.SetCookie(w, &http.Cookie{Name: c, Value: "v", Path: "/", Secure: true})
+					http.SetCookie(w, &http.Cookie{Name: c, Value: "v", Path: "/"})
 				}
 				w.Header().Set("Location", "/guardian/home.html")
 				w.WriteHeader(http.StatusFound)

@@ -11,9 +11,6 @@ import (
 	"github.com/IamCoder18/schooltools/internal/httpclient"
 )
 
-// sessionStaleError is the single user-facing error for "PowerSchool
-// bounced us to the sign-in page". It carries a stable code so the auth
-// log and JSON callers can distinguish it from a transport failure.
 func sessionStaleError(detail string) error {
 	return stderrors.New("PS_SESSION_STALE",
 		fmt.Sprintf("PowerSchool redirected to the sign-in page (%s); the saved SIS session is likely expired — run 'schooltools sis login'", detail))
@@ -42,10 +39,11 @@ func (c *Client) GetDashboardHTML() (string, error) {
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		if isSigninRedirect(res) {
+			_ = res.Body.Close()
 			return "", sessionStaleError(fmt.Sprintf("HTTP %d", res.StatusCode))
 		}
-		hint := errorHint(res)
-		return "", fmt.Errorf("GET %s: HTTP %d %s%s", redactedURL(rawURL), res.StatusCode, res.Status, hint)
+		_ = res.Body.Close()
+		return "", statusError(http.MethodGet, rawURL, res)
 	}
 	body, err := httpclient.BodyString(res)
 	if err != nil {
@@ -56,13 +54,6 @@ func (c *Client) GetDashboardHTML() (string, error) {
 }
 
 var (
-	// Pattern: /guardian/credentials.html?frn=00<TABLE><DCID>
-	// PowerSchool's FRN format is `<type_code><table_id><record_id>`.
-	// The student record's table_id is a single digit on CBE, so the
-	// DCID is the trailing 8 digits of the FRN suffix (post "00").
-	//
-	// We deliberately over-match (capture everything after "00")
-	// and then truncate to the last 8 digits in code.
 	dashboardStudentFRN = regexp.MustCompile(`/guardian/credentials\.html\?frn=00(\d+)`)
 )
 
@@ -83,8 +74,6 @@ func ExtractDCIDFromDashboard(html string) int64 {
 	if len(frnSuffix) < 8 {
 		return 0
 	}
-	// Take the trailing 8 digits. This handles the "00<1 digit><8 DCID>"
-	// shape on CBE without needing to know the exact table_id length.
 	d, err := strconv.ParseInt(frnSuffix[len(frnSuffix)-8:], 10, 64)
 	if err != nil {
 		return 0

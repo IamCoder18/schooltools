@@ -543,7 +543,7 @@ func fetchMySubmissions(jar *cookiejar.Jar, courseID, folderID string) ([]Entity
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode == 403 {
 		return nil, errSubmissionsBlocked
 	}
@@ -565,7 +565,7 @@ func fetchFeedback(jar *cookiejar.Jar, courseID, folderID, entityType, entityID 
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode == 404 {
 		return nil, nil
 	}
@@ -786,9 +786,9 @@ func submissionsSection(rep assignmentReport) string {
 	}
 	var b strings.Builder
 	for i, s := range rep.Submissions {
-		b.WriteString(fmt.Sprintf("  %s %s\n",
+		fmt.Fprintf(&b, "  %s %s\n",
 			render.Accent(fmt.Sprintf("#%d", i+1)),
-			render.When(s.Date())))
+			render.When(s.Date()))
 		if note := s.Note(); note != "" {
 			b.WriteString("    " + render.Wrap(note, render.Width()-4) + "\n")
 		}
@@ -973,7 +973,7 @@ func formatFeedbackRubric(out Feedback, rubric *Rubric, folderID int, courseID s
 				if lvl := rubric.OverallLevelName(score); lvl != "" {
 					value += "  →  " + render.Accent(lvl)
 				}
-				b.WriteString(fmt.Sprintf("\n    %-*s  %s\n", 46, "Overall", value))
+				fmt.Fprintf(&b, "\n    %-*s  %s\n", 46, "Overall", value)
 			}
 		}
 	}

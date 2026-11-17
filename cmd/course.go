@@ -389,7 +389,7 @@ func renderCourseReport(rep courseReportOut, id string, own d2lCourse, haveOwn b
 				break
 			}
 			when := n.Date()
-			b.WriteString(fmt.Sprintf("  %s  %s\n", render.Muted(render.Truncate(render.Rel(when), 12)), render.Truncate(n.Title, 60)))
+			fmt.Fprintf(&b, "  %s  %s\n", render.Muted(render.Truncate(render.Rel(when), 12)), render.Truncate(n.Title, 60))
 		}
 		b.WriteString(render.Hint("schooltools news --course %s", id))
 	}
@@ -552,10 +552,6 @@ func dateOrEmpty(s *string) string {
 		return ""
 	}
 	return *s
-}
-
-func formatDate(s *string) string {
-	return render.Date(dateOrEmpty(s))
 }
 
 func plural(n int) string {

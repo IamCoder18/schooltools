@@ -65,6 +65,18 @@ func standardGradeFlags(r ps.StandardGrade) []string {
 	if !r.IsEnrolled {
 		flags = append(flags, "not_enrolled")
 	}
+	if r.IsMigrated {
+		flags = append(flags, "migrated")
+	}
+	if r.IsAdminModified {
+		flags = append(flags, "admin_modified")
+	}
+	if r.IsReportsRollupExcluded {
+		flags = append(flags, "reports_rollup_excluded")
+	}
+	if r.IsManuallyOverridden {
+		flags = append(flags, "manually_overridden")
+	}
 	return flags
 }
 
