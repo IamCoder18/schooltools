@@ -20,7 +20,7 @@ var (
 var rootCmd = &cobra.Command{
 	Use:     "schooltools",
 	Short:   "CLI tools for CBE / D2L / Brightspace",
-	Version: "0.3.0",
+	Version: "0.4.0",
 }
 
 func init() {
