@@ -370,10 +370,17 @@ func TestClientDoesNotRefreshWithoutHook(t *testing.T) {
 // fanning out across workers would issue one full login per in-flight
 // request against the portal that just rejected the session.
 func TestClientCollapsesConcurrentRefresh(t *testing.T) {
+	const callers = 8
 	var refreshed atomic.Bool
+	var arrived atomic.Int32
+	release := make(chan struct{})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/xte/student/1/enrollments", func(w http.ResponseWriter, r *http.Request) {
 		if !refreshed.Load() {
+			if arrived.Add(1) == int32(callers) {
+				close(release)
+			}
+			<-release
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -394,7 +401,6 @@ func TestClientCollapsesConcurrentRefresh(t *testing.T) {
 		return jar, nil
 	})
 
-	const callers = 8
 	var wg sync.WaitGroup
 	errs := make([]error, callers)
 	for i := 0; i < callers; i++ {
@@ -411,4 +417,22 @@ func TestClientCollapsesConcurrentRefresh(t *testing.T) {
 	}
 	assert.Equal(t, int32(1), atomic.LoadInt32(&reauths),
 		"a concurrent burst of 401s must trigger exactly one re-authentication")
+}
+
+func TestClientErrorRedactsStudentDCID(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws/xte/student/90000001/enrollments", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	jar, _ := httpclient.NewJar()
+	c := ps.NewClient(jar)
+	c.Base = srv.URL
+
+	_, err := c.GetEnrollments(90000001, 36)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "90000001")
+	assert.Contains(t, err.Error(), "student/<redacted>/")
 }

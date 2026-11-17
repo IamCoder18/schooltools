@@ -80,7 +80,7 @@ var sisStandardsCmd = &cobra.Command{
 			return fmt.Errorf("no enrollments for school year %d; pass --year <id> to select a different year", yearID)
 		}
 
-		var rows []sisStandardRow
+		rows := make([]sisStandardRow, 0)
 		seen := map[string]bool{}
 		for _, e := range stu.Enrollments {
 			stds, err := client.GetStandards([]int64{e.SectionDCID})

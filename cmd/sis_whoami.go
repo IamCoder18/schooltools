@@ -38,6 +38,9 @@ var sisWhoamiCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("/ws/xte/student/%d/enrollments failed: %w", dcid, err)
 		}
+		if stu.DCID == 0 {
+			return fmt.Errorf("PowerSchool returned an empty student record; run 'schooltools sis login'")
+		}
 
 		if asJSON {
 			out := map[string]any{

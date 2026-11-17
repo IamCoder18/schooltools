@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -140,7 +141,7 @@ func (c *Client) fetchJSON(method, rawURL string, body any, out any) error {
 	}
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" {
-		return nil
+		return fmt.Errorf("%s %s: decode JSON: empty response", method, redactedURL(rawURL))
 	}
 	if !json.Valid([]byte(trimmed)) {
 		if isLoginPage(trimmed) {
@@ -248,15 +249,21 @@ func isLoginPage(body string) bool {
 	return strings.Contains(lower, "login") || strings.Contains(lower, "sign in") || strings.Contains(lower, "dopcaslogin")
 }
 
-// redactedURL strips the query string from a URL before it is embedded in
-// an error message. The PS API carries student DCIDs and section IDs in
-// query parameters.
+var studentPathRE = regexp.MustCompile(`/student/\d+`)
+
+// redactedURL strips the query string and any student DCID from a URL
+// before it is embedded in an error message. The PS API carries student
+// DCIDs in query parameters and in the path for enrollment lookups.
 func redactedURL(rawURL string) string {
 	u, err := url.Parse(rawURL)
-	if err != nil || u.RawQuery == "" {
+	if err != nil {
 		return rawURL
 	}
-	return u.Scheme + "://" + u.Host + u.Path + "?<redacted>"
+	u.Path = studentPathRE.ReplaceAllString(u.Path, "/student/<redacted>")
+	if u.RawQuery != "" {
+		return u.Scheme + "://" + u.Host + u.Path + "?<redacted>"
+	}
+	return u.Scheme + "://" + u.Host + u.Path
 }
 
 // GetEnrollments returns the student profile + every active section.
