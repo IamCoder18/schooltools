@@ -370,10 +370,10 @@ func TestClientDoesNotRefreshWithoutHook(t *testing.T) {
 // fanning out across workers would issue one full login per in-flight
 // request against the portal that just rejected the session.
 func TestClientCollapsesConcurrentRefresh(t *testing.T) {
-	var logins int32
+	var refreshed atomic.Bool
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/xte/student/1/enrollments", func(w http.ResponseWriter, r *http.Request) {
-		if atomic.AddInt32(&logins, 1) <= 8 {
+		if !refreshed.Load() {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -390,6 +390,7 @@ func TestClientCollapsesConcurrentRefresh(t *testing.T) {
 	var reauths int32
 	c.SetReauth(func() (*cookiejar.Jar, error) {
 		atomic.AddInt32(&reauths, 1)
+		refreshed.Store(true)
 		return jar, nil
 	})
 

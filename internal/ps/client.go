@@ -248,13 +248,6 @@ func isLoginPage(body string) bool {
 	return strings.Contains(lower, "login") || strings.Contains(lower, "sign in") || strings.Contains(lower, "dopcaslogin")
 }
 
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
-}
-
 // redactedURL strips the query string from a URL before it is embedded in
 // an error message. The PS API carries student DCIDs and section IDs in
 // query parameters.
