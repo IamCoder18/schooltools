@@ -9,7 +9,8 @@ guardrails that a generic Go skill would not know.
 ## Project summary
 
 - **What it is:** A headless CLI for the Calgary Board of Education's
-  D2L / Brightspace LMS. One user, one tenant, no server.
+  D2L / Brightspace LMS and PowerSchool MyCBE portal. One user, one
+  tenant, no server.
 - **Language:** Go (1.26+). Module path
   `github.com/IamCoder18/schooltools`.
 - **Frameworks:** cobra for commands, bubbletea/lipgloss for the

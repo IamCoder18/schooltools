@@ -1,14 +1,16 @@
 # schooltools
 
-CLI tools for CBE / D2L / Brightspace. Written in Go on top of the
-Charmbracelet stack (cobra, bubbletea, lipgloss). Headless: no browser, no
-interactive MFA prompt.
+CLI tools for CBE / D2L / Brightspace **and PowerSchool MyCBE**. Written in
+Go on top of the Charmbracelet stack (cobra, bubbletea, lipgloss). Headless:
+no browser, no interactive MFA prompt.
 
 ## What this CLI is for
 
 schooltools is a headless command-line client for the Calgary Board of
-Education's D2L / Brightspace LMS. **Six surfaces** cover the day-to-day
-student workflow:
+Education's **D2L / Brightspace LMS** and **PowerSchool MyCBE parent/student
+portal**.
+
+**D2L / Brightspace — six surfaces** cover the classroom workflow:
 
   - `course`         discover enrolled courses
   - `content`        browse a course's modules and topics
@@ -17,11 +19,18 @@ student workflow:
   - `assignment`     dropbox folders, submissions, feedback
   - `quiz`           quiz list and attempts
 
+**PowerSchool MyCBE — `sis`** covers the marks side:
+
+  - `sis grades`          enrolled classes and current T1/S1 marks
+  - `sis standard-grades` every outcome with its proficiency code and percentage
+  - `sis assignments`     posted assignments, due dates, categories and scores
+  - `sis scale`           the CBE High School Proficiency Scale
+  - `sis standards`       rubric outcomes per section
+
 Everything else (`news`, `grade`, `discussion`, `calendar`, `due`,
 `overdue`, `update`, `feed`, `award`) is
 **implemented but rarely useful from a CLI** — see
-[Advanced / rarely used](#advanced--rarely-used) below. If you're not
-sure which command you need, start with the six above.
+[Advanced / rarely used](#advanced--rarely-used) below.
 
 ## Quickstart
 
@@ -34,8 +43,12 @@ go install .
    ```
    CBE_EMAIL=you@example.com
    CBE_PASSWORD=...
+   # For PowerSchool MyCBE:
+   SIS_STUDENT_NUMBER=<student number>
+   SIS_PASSWORD=...
    ```
-2. `schooltools login` (KMSI defaults on).
+2. `schooltools login` (KMSI defaults on). For PowerSchool, run
+   `schooltools sis login` after.
 3. Pick a course to start with:
 
    ```sh
@@ -45,12 +58,13 @@ go install .
    schooltools download --course 1527886 19278283    # download that topic's file
    schooltools archive update                       # snapshot every course
    schooltools archive find "safety contract"      # search your archive
+   schooltools sis grades --marks                   # PowerSchool marks
    ```
 
 ## Commands (promoted)
 
-These are the six surfaces a student opens the CLI for. They get the
-README spotlight; everything else lives further down.
+These are the surfaces a student opens the CLI for. They get the README
+spotlight; everything else lives further down.
 
 | Command | Purpose |
 | --- | --- |
@@ -61,6 +75,69 @@ README spotlight; everything else lives further down.
 | `assignment` / `dropbox` | List folders, show my submissions, download files. Scope with `--course <id>`. |
 | `quiz` | List quizzes and show my attempts. Scope with `--course <id>`. |
 | `sis` | PowerSchool MyCBE parent/student portal (`sis login`, `sis whoami`, `sis grades`, `sis grades --marks`, `sis standards`, `sis standard-grades`, `sis assignments`, `sis scale`, `sis years`, `sis school`). |
+
+## PowerSchool MyCBE
+
+The Calgary Board of Education's parent/student portal
+(https://sis.cbe.ab.ca) is the PowerSchool SIS in a different skin. We
+talk to it through the Angular SPA's internal REST endpoints at
+`/ws/xte/…`, with session-cookie auth.
+
+```sh
+schooltools sis login              # sign in to MyCBE (saves to ~/.config/schooltools/sis-session.json)
+schooltools sis whoami             # student profile + section count
+schooltools sis years              # year picker
+schooltools sis grades             # every enrolled section for the active year
+schooltools sis grades --marks     # course marks for every reporting term (T1, T2, S1, …)
+schooltools sis standards          # standards (rubric items) per section
+schooltools sis standard-grades    # outcome grades + calculated percentages
+schooltools sis assignments        # posted assignments (often empty early in a term)
+schooltools sis scale              # CBE High School Proficiency Scale
+schooltools sis school             # per-school config (max comment size, etc.)
+schooltools sis logout             # clear the SIS session
+```
+
+The `.env` file is required only when credentials are actually needed:
+`sis login` and any automatic re-authentication (when the saved session
+is missing or the portal returns 401/403). Every read-only subcommand
+works from the saved session alone, so `sis whoami`,
+`sis grades --marks` and friends run fine in a directory without an
+`.env`.
+
+Every `sis --json` payload is an envelope with a `count` field and
+snake_case keys, so `sis grades`, `sis standard-grades`, `sis
+assignments`, `sis standards`, `sis years` and `sis school` can be
+consumed without special-casing each command.
+
+Auth uses `SIS_STUDENT_NUMBER` + `SIS_PASSWORD` from `.env` (fall
+back to `CBE_STUDENT_NUMBER` + `CBE_PASSWORD`, then `CBE_EMAIL` +
+`CBE_PASSWORD` — the last of which warns on stderr, because MyCBE
+expects the student number and will reject an email address). CBE
+customised PowerSchool's `doPCASLogin` to send
+plaintext passwords, so no HMAC or `pskey` is required. The login
+follows the browser's flow:
+
+1. `GET /public/` seeds the `JSESSIONID` cookie
+2. `POST /guardian/home.html` with form-urlencoded credentials → 302
+   back to `/guardian/home.html`, which sets the four session
+   cookies (`JSESSIONID`, `psaid`, `currentSchool`, `current_locale`)
+3. The four cookies are saved to the SIS session file
+
+Redirects that leave the portal's origin are refused.
+
+`--auto-refresh` (on by default) re-authenticates when the saved
+session is missing. To keep a logout sticky, pass
+`--auto-refresh=false` to each subsequent command. A `sis` command
+that gets a 401/403 from the portal also re-authenticates once and
+retries, because PowerSchool issues `psaid`/`JSESSIONID` without an
+`Expires` and a server-side revocation is invisible to the local expiry
+check.
+
+Set `SIS_DCID=<student DCID>` in `.env` to skip the credentials-link scrape
+that `sis whoami` uses to discover the internal DCID. `sis assignments`
+drills into the per-cell legacy endpoint once per standard, so it takes
+`--section <dcid>` to narrow a run and `--max-cells` (default 200) to
+cap it.
 
 ## Common flags
 
@@ -322,69 +399,6 @@ specifically need scriptable access.
 > them.
 
 Each of these has full `--help` text with endpoint details.
-
-### PowerSchool MyCBE (`sis` subtree)
-
-The Calgary Board of Education's parent/student portal
-(https://sis.cbe.ab.ca) is the PowerSchool SIS in a different skin. We
-talk to it through the Angular SPA's internal REST endpoints at
-`/ws/xte/…`, with session-cookie auth.
-
-```sh
-schooltools sis login              # sign in to MyCBE (saves to ~/.config/schooltools/sis-session.json)
-schooltools sis whoami             # student profile + section count
-schooltools sis years              # year picker
-schooltools sis grades             # every enrolled section for the active year
-schooltools sis grades --marks     # course marks for every reporting term (T1, T2, S1, …)
-schooltools sis standards          # standards (rubric items) per section
-schooltools sis standard-grades    # outcome grades + calculated percentages
-schooltools sis assignments        # posted assignments (often empty early in a term)
-schooltools sis scale              # CBE High School Proficiency Scale
-schooltools sis school             # per-school config (max comment size, etc.)
-schooltools sis logout             # clear the SIS session
-```
-
-The `.env` file is required only when credentials are actually needed:
-`sis login` and any automatic re-authentication (when the saved session
-is missing or the portal returns 401/403). Every read-only subcommand
-works from the saved session alone, so `sis whoami`,
-`sis grades --marks` and friends run fine in a directory without an
-`.env`.
-
-Every `sis --json` payload is an envelope with a `count` field and
-snake_case keys, so `sis grades`, `sis standard-grades`, `sis
-assignments`, `sis standards`, `sis years` and `sis school` can be
-consumed without special-casing each command.
-
-Auth uses `SIS_STUDENT_NUMBER` + `SIS_PASSWORD` from `.env` (fall
-back to `CBE_STUDENT_NUMBER` + `CBE_PASSWORD`, then `CBE_EMAIL` +
-`CBE_PASSWORD` — the last of which warns on stderr, because MyCBE
-expects the student number and will reject an email address). CBE
-customised PowerSchool's `doPCASLogin` to send
-plaintext passwords, so no HMAC or `pskey` is required. The login
-follows the browser's flow:
-
-1. `GET /public/` seeds the `JSESSIONID` cookie
-2. `POST /guardian/home.html` with form-urlencoded credentials → 302
-   back to `/guardian/home.html`, which sets the four session
-   cookies (`JSESSIONID`, `psaid`, `currentSchool`, `current_locale`)
-3. The four cookies are saved to the SIS session file
-
-Redirects that leave the portal's origin are refused.
-
-`--auto-refresh` (on by default) re-authenticates when the saved
-session is missing. To keep a logout sticky, pass
-`--auto-refresh=false` to each subsequent command. A `sis` command
-that gets a 401/403 from the portal also re-authenticates once and
-retries, because PowerSchool issues `psaid`/`JSESSIONID` without an
-`Expires` and a server-side revocation is invisible to the local expiry
-check.
-
-Set `SIS_DCID=<student DCID>` in `.env` to skip the credentials-link scrape
-that `sis whoami` uses to discover the internal DCID. `sis assignments`
-drills into the per-cell legacy endpoint once per standard, so it takes
-`--section <dcid>` to narrow a run and `--max-cells` (default 200) to
-cap it.
 
 ## Migration notes
 

@@ -1,9 +1,9 @@
 # Security
 
 The **schooltools** project takes the security of its users — and of
-the Calgary Board of Education / D2L / Brightspace accounts it logs
-into — seriously. This document explains how to report a vulnerability
-and the scope of what we consider in scope.
+the Calgary Board of Education / D2L / Brightspace / PowerSchool MyCBE
+accounts it logs into — seriously. This document explains how to report
+a vulnerability and the scope of what we consider in scope.
 
 ---
 
@@ -50,7 +50,8 @@ If we agree a fix is appropriate, we will:
 ## Threat model
 
 schooltools is a **personal**, **single-user**, **headless** CLI that
-authenticates as **you** to a CBE / D2L / Brightspace tenant. The
+authenticates as **you** to a CBE / D2L / Brightspace or PowerSchool
+MyCBE tenant. The
 project is not a multi-tenant service, has no server, and accepts no
 inbound network traffic. The threats we care about are:
 

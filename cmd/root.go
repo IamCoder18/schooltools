@@ -18,8 +18,10 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:     "schooltools",
-	Short:   "CLI tools for CBE / D2L / Brightspace",
+	Use:   "schooltools",
+	Short: "CLI tools for CBE / D2L / Brightspace and PowerSchool MyCBE",
+	Long: "Headless CLI for the Calgary Board of Education's D2L / Brightspace LMS\n" +
+		"and PowerSchool MyCBE parent/student portal.",
 	Version: "0.4.0",
 }
 

@@ -58,8 +58,9 @@ Conventions:
 ### Prerequisites
 
 - **Go 1.26+** — `go version` should report `go1.26` or later.
-- A CBE / D2L / Brightspace account, **or** the `--help` text is enough
-  if you're not changing auth or HTTP code paths.
+- A CBE / D2L / Brightspace account (or PowerSchool MyCBE credentials for
+  the `sis` commands), **or** the `--help` text is enough if you're not
+  changing auth or HTTP code paths.
 
 ### Build & test
 
